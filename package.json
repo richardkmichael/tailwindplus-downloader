@@ -1,0 +1,21 @@
+{
+  "name": "tailwindplus-scraper",
+  "version": "1.0.0",
+  "main": "tailwindplus-download.js",
+  "description": "A web scraper for TailwindPlus components with diff comparison tools",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint --config eslint.config.cjs \"**/*.js\"",
+    "lint:fix": "eslint --config eslint.config.cjs \"**/*.js\" --fix"
+  },
+  "author": "Richard Michael",
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.52.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.27.0",
+    "@eslint/js": "^9.27.0",
+    "globals": "^14.0.0"
+  }
+}
