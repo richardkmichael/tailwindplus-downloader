@@ -1,540 +1,872 @@
 /**
-* TailwindPlus Component Scraper
-* 
-* This script uses Playwright to navigate the TailwindPlus website and extract component code.
-* It creates a separate browser tab for each product category and navigates through the
-* hierarchical structure to collect all component HTML.
-* 
-* The scraper processes pages using DOM API executed in browser context for performance.
-* It builds a hierarchical JSON structure matching the website organization.
-* 
-* Data structure progression:
-* 1. Extract product categories and their base URLs
-* 2. Extract sections within each category
-* 3. Navigate to component pages and extract HTML code
-* 4. Replace URL placeholders with actual component data
-*/
-
-/**
- * Example of intermediate data structure before component extraction:
- * {
- *   "Marketing": {
- *     "Page Sections": {
- *       "Hero Sections": "http://hero-sections",
- *       "Feature Sections": "http://feature-sections",
- *       "CTA Sections": "http://cta-sections",
- *       "Bento Grids": "http://bento-grids"
- *     },
- *     "Elements": {
- *       "Headers": "http://headers",
- *       "Flyout Menus": "http://flyout-menus",
- *       "Banners": "http://banners"
- *     }
- *   },
- *   "Application UI": {
- *     "Application Shells": {
- *       "Stacked Layouts": "http://stacked-layouts",
- *       "Sidebar Layouts": "http://sidebar-layouts"
- *     },
- *     "Headings": {
- *       "Page Headings": "http://page-headings",
- *       "Card Headings": "http://card-headings"
- *     }
- *   }
- * }
+ * TailwindPlus Component Downloader
+ *
+ * This script uses a class-based architecture and a parallel worker pool to
+ * download component data from the TailwindPlus website. It is designed for
+ * robustness, with fail-fast error handling and comprehensive debugging features.
  */
 
-const { chromium } = require('playwright');
-const fs = require('fs');
-const path = require('path');
+import { chromium } from 'playwright';
+import fs from 'fs';
+import path from 'path';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
 
-// Configuration constants
-const COMPONENT_LOAD_DELAY_MS = 250; // Delay for component code to render
-const LOGIN_TIMEOUT_MS = 60 * 1000; // 60 seconds for manual login
-const NAVIGATION_TIMEOUT_MS = 30 * 1000; // 30 seconds for page navigation
-const GOBACK_TIMEOUT_MS = 15 * 1000; // 15 seconds for go back navigation
+// ===================================================================================
+//
+//  Custom Error and Logger Classes
+//
+// ===================================================================================
 
-/**
- * Validation functions
- */
-
-/**
- * Validates if a string is a properly formatted HTTP/HTTPS URL
- * @param {string} string - The URL string to validate
- * @returns {boolean} True if valid URL, false otherwise
- */
-function isValidUrl(string) {
-  try {
-    const url = new URL(string);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
+class CriticalDownloadError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'CriticalDownloadError';
   }
 }
 
-/**
- * Validates if a file path is safe and accessible
- * @param {string} filePath - The file path to validate
- * @returns {boolean} True if valid and accessible path, false otherwise
- */
-function isValidFilePath(filePath) {
-  // Check for invalid characters and ensure it's not empty
-  if (!filePath || typeof filePath !== 'string') {
-    return false;
-  }
+class Logger {
+  constructor(options = {}) {
+    this.isDebug = options.isDebug || false;
+    this.logFilePath = options.logFilePath || null;
+    this.logStream = null;
 
-  // Check for potentially dangerous patterns
-  const dangerousPatterns = /[<>:"|?*\x00-\x1F]/;
-  if (dangerousPatterns.test(filePath)) {
-    return false;
-  }
-
-  // Ensure the directory exists or can be created
-  const dirPath = path.dirname(filePath);
-  try {
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+    if (this.logFilePath) {
+      this.logStream = fs.createWriteStream(this.logFilePath, { flags: 'w' });
     }
-    return true;
-  } catch {
-    return false;
+  }
+
+  log(message) {
+    const logMessage = `[${new Date().toISOString()}] ${message}`;
+    if (this.isDebug) {
+      console.log(logMessage);
+    }
+    if (this.logStream) {
+      this.logStream.write(logMessage + '\n');
+    }
+  }
+
+  close() {
+    if (this.logStream) {
+      this.logStream.end();
+    }
   }
 }
 
-/**
- * Command line argument parsing
- * @param {string[]} args - Command line arguments
- * @returns {Object} Parsed options object
- */
-function parseArgs(args) {
-  // Generate default timestamped filename
-  const now = new Date();
-  const timestamp = now.toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
-  const defaultOutputPath = `./tailwindplus-components-${timestamp}.json`;
+// ===================================================================================
+//
+//  Top-Level Helper Functions
+//
+// ===================================================================================
 
-  const options = {
-    outputPath: defaultOutputPath,
-    cookiesPath: './cookies.json',
-    auth: false,
-    debug: false,
-    help: false
+/**
+ * A factory function that builds and returns an object
+ * containing all necessary configuration values.
+ */
+function createConfig() {
+  const baseURL = 'https://tailwindcss.com';
+  const plusBase = `${baseURL}/plus`;
+
+  const components = 'nav ~ div > section[id^="component-"]';
+  const firstComponent = `${components}:first-of-type`;
+
+  return {
+    urls: {
+      base: baseURL,
+      login: `${plusBase}/login`,
+      loginSuccess: plusBase,
+      discovery: `${plusBase}/ui-blocks`
+    },
+
+    selectors: {
+      components,
+      firstComponent,
+      codeButtons: `${components} > div > :nth-child(2) > div > button:last-child`,
+      frameworkSelect: `${firstComponent} > div > :nth-child(2) > :nth-child(3) select`,
+      versionSelect: `${firstComponent} > div > :nth-child(3) > :nth-child(2) select`,
+    },
+
+    timeouts: {
+      response: 5000,
+      slowMo: 750
+    },
+
+    retries: {
+      maxRetries: 9
+    },
+
+    download: {
+      frameworks: ['html', 'react', 'vue'],
+      versions: [3, 4]
+    }
   };
-
-  for (const arg of args) {
-    if (arg === '--help') {
-      options.help = true;
-    } else if (arg === '--auth') {
-      options.auth = true;
-    } else if (arg === '--debug') {
-      options.debug = true;
-    } else if (arg.startsWith('--') && arg.includes('=')) {
-      const [key, value] = arg.split('=', 2);
-      switch (key) {
-      case '--output-path':
-        options.outputPath = value;
-        break;
-      case '--cookies-path':
-        options.cookiesPath = value;
-        break;
-      default:
-        console.error(`Unknown option: ${key}`);
-        process.exit(1);
-      }
-    } else if (arg.startsWith('--')) {
-      console.error(`Unknown option: ${arg}`);
-      process.exit(1);
-    } else {
-      console.error(`Invalid argument: ${arg}`);
-      process.exit(1);
-    }
-  }
-
-  return options;
 }
 
-/**
- * Display help information for command line usage
- */
-function showHelp() {
-  console.log(`Usage: node tailwindplus-download.js [options]
+const CONFIG = createConfig();
 
-Options:
-  --output-path=<filename>   Path to save TailwindPlus components (default: timestamped filename)
-  --cookies-path=<filename>  Path to save cookies (default: "./cookies.json")
-  --auth                     Open browser to allow Tailwind login
-  --debug                    Show browser and debug output
-  --help                     Display this help message
-`);
-}
-
-/**
- * Log messages based on debug mode
- * @param {string} message - Message to log
- * @param {boolean} isDebug - Whether this is a debug message
- * @param {boolean} DEBUG - Whether debug mode is enabled
- */
-function log(message, isDebug = false, DEBUG = false) {
-  if (!isDebug || DEBUG) {
-    console.log(message);
-  }
-}
-
-/**
- * Load cookies from file
- * @param {string} cookiePath - Path to the cookie file
- * @returns {Object|null} Parsed cookies or null if file doesn't exist
- */
-function loadCookiesFromFile(cookiePath) {
-  if (!fs.existsSync(cookiePath)) {
-    return null;
-  }
-  const cookiesString = fs.readFileSync(cookiePath, 'utf8');
-  return JSON.parse(cookiesString);
-}
-
-/**
- * Main scraping function to handle the hierarchical structure
- * @param {string} rootUrl - The root URL to start scraping from
- * @param {Object} cookies - Authentication cookies
- * @param {string} outputPath - Path where results will be saved
- * @param {boolean} DEBUG - Whether to show browser and debug output
- * @returns {Promise<Object>} The complete scraped data hierarchy
- */
-async function scrapeTailwindPlus(rootUrl, cookies, outputPath, DEBUG = false) {
-
-  // Launch browser, only show browser in debug mode
-  const browser = await chromium.launch({ headless: !DEBUG });
-  const context = await browser.newContext();
-  const rootPage = await context.newPage();
-
-  try {
-    // Load authentication cookies if provided
-    if (cookies) {
-      await context.addCookies(cookies);
-      log('Cookies loaded successfully.', false, DEBUG);
-    }
-
-    // Navigate to the root page
-    log(`Navigating to root page: ${rootUrl}`, false, DEBUG);
-    await rootPage.goto(rootUrl, { waitUntil: 'networkidle' });
-
-    // Find all products
-    const productHierarchy = await getProductNamesAndPageUrls(rootPage);
-
-    // Root no longer needed
-    await rootPage.close();
-
-    // Process each product page in a separate tab
-    for (const [product, productPageUrl] of Object.entries(productHierarchy)) {
-
-      console.log(`Processing ${product}`);
-
-      const productPage = await context.newPage();
-      try {
-        await productPage.goto(productPageUrl, { waitUntil: 'networkidle', timeout: NAVIGATION_TIMEOUT_MS });
-
-        productHierarchy[product] = await getProductSectionsAndPageUrls(productPage);
-
-        for (const productSection of Object.keys(productHierarchy[product])) {
-          for (const [subSection, componentsUrl] of Object.entries(productHierarchy[product][productSection])) {
-            try {
-              await productPage.goto(componentsUrl, { waitUntil: 'networkidle', timeout: NAVIGATION_TIMEOUT_MS });
-              let components = await getComponentsAndData(productPage);
-              console.log(`Downloaded components from: ${componentsUrl}`);
-              productHierarchy[product][productSection][subSection] = components;
-              await productPage.goBack({ waitUntil: 'networkidle', timeout: GOBACK_TIMEOUT_MS });
-            } catch (error) {
-              console.error(`Failed to extract components from ${componentsUrl}: ${error.message}`);
-              productHierarchy[product][productSection][subSection] = { error: error.message };
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Failed to process product ${product}: ${error.message}`);
-        productHierarchy[product] = { error: error.message };
-      } finally {
-        await productPage.close();
-      }
-    }
-
-    // Return the complete results
-    return productHierarchy;
-
-  } catch (error) {
-    console.error('Error during scraping:', error);
-    throw error;
-  } finally {
-    await browser.close();
-  }
-}
-
-/**
- * Save cookies after manual login and return them
- * @param {string} loginUrl - URL to navigate to for login
- * @param {string} cookiePath - Path to save cookies to
- * @returns {Promise<Object>} The saved cookies
- */
-async function saveCookies(loginUrl, cookiePath) {
-
-  // Always show browser for login
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
+async function login(context, credentials, logger) {
   const page = await context.newPage();
-
   try {
-    await page.goto(loginUrl);
-
-    console.log('Please log in manually in the browser window...');
-
-    // Wait for navigation after login, the Account button appears in the header
-    await page.waitForFunction(() => {
-      const buttons = Array.from(document.querySelectorAll('header button'));
-      return buttons.some(button => button.textContent.includes('Account'));
-    }, { timeout: LOGIN_TIMEOUT_MS }); // Timeout to give time for manual login
-
-    console.log('Login detected, saving cookies...');
-
-    // Get cookies
-    const cookies = await context.cookies();
-
-    // Create directory if it doesn't exist
-    const dirPath = path.dirname(cookiePath);
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
-    }
-
-    // Save to file
-    fs.writeFileSync(cookiePath, JSON.stringify(cookies, null, 2));
-
-    console.log(`Cookies saved to ${cookiePath}`);
-
-    // Return cookies for immediate use
-    return cookies;
-
+    logger.log('   Logging in...');
+    await page.goto(CONFIG.urls.login);
+    await page.getByRole('textbox', { name: 'Email' }).fill(credentials.email);
+    await page.getByRole('textbox', { name: 'Password' }).fill(credentials.password);
+    await page.getByRole('button', { name: 'Sign in to account' }).click();
+    await page.waitForURL(CONFIG.urls.loginSuccess);
+    logger.log('   Login successful.');
   } finally {
-    await browser.close();
+    await page.close();
   }
 }
 
-/**
- * Extract product names and their base page URLs from the root page
- * @param {Object} rootPage - Playwright page object for the root page
- * @returns {Promise<Object>} Object mapping product names to their base URLs
- */
-async function getProductNamesAndPageUrls(rootPage) {
-  return await rootPage.evaluate(() => {
 
-    // Helper function; needs to be defined in the code executing in the browser.
-    function findUrlBasePath(urls) {
-      if (!urls.length) return '';
-      if (urls.length === 1) return urls[0];
+// ===================================================================================
+//
+//  Worker Class
+//
+// ===================================================================================
 
-      // Sort the array (this puts alphabetically similar strings next to each other)
-      urls = [...urls].sort();
+class Worker {
+  constructor(id, browser, credentials, logger, isTrace = false) {
+    this.id = id;
+    this.browser = browser;
+    this.credentials = credentials;
+    this.isTrace = isTrace;
+    this.context = null;
+    this.page = null;
 
-      // Compare first and last strings (most dissimilar after sorting)
-      const first = urls[0];
-      const last = urls[urls.length - 1];
+    // Override logger to automatically add worker prefix
+    this.logger = {
+      log: (message) => logger.log(`[Worker ${this.id.toString().padStart(2, ' ')}] ${message}`)
+    };
+  }
 
-      let i = 0;
-      while (i < first.length && i < last.length && first[i] === last[i]) {
-        i++;
-      }
-      return first.substring(0, i);
-    }
+  async checkExistingPageData(framework, version) {
+    try {
+      const appElement = await this.page.locator('div#app');
+      const pageDataJson = await appElement.getAttribute('data-page');
+      const pageData = JSON.parse(pageDataJson);
+      const pageComponents = pageData?.props?.subcategory?.components;
 
-    return Array.from(
-      document.querySelectorAll('nav ~ section[id^="product-"]')
-    ).reduce(
-      (namesAndUrls, section) => (
-        {
-          ...namesAndUrls,
-          [section.querySelector('h2').textContent]: findUrlBasePath(Array.from(section.querySelectorAll('li a')).map(a => a.href))
-        }
-      ), {}
-    );
-  });
-}
-
-/**
- * Extract product sections and their page URLs from a product page
- * @param {Object} productPage - Playwright page object for a product page
- * @returns {Promise<Object>} Object mapping sections to their page URLs
- */
-async function getProductSectionsAndPageUrls(productPage) {
-  return await productPage.evaluate(() => {
-
-    // Helper function; needs to be defined in the code executing in the browser.
-    //
-    // Accepts a productSubSection ("Page Sections")
-    // Returns "Hero Sections", "Feature Sections", "CTA Sections", etc., with the respective page URLs:
-    //
-    //   { "Page Sections": {
-    //     "Hero Sections": "http://hero-sections",
-    //     "Feature Sections": "http://feature-sections",
-    //     "CTA Sections": "http://cta-sections",
-    //     ... }
-    function productSectionToNamesAndPageUrls(pageSection) {
-      return Array.from(
-        pageSection.querySelectorAll('li :is(p:first-child, a)')
-      ).map(
-        e => { if (e.nodeName == 'A') { return e.href; } else if (e.nodeName == 'P') { return e.textContent; }}
-      ).reduce(
-        (obj, item, index, array) => {
-          if (index % 2 === 1) {
-            obj[item] = array[index - 1];
-          }
-          return obj;
-        }, {}
-      );
-    }
-
-    return Array.from(
-      document.querySelectorAll('nav ~ div > section[id^="product-"]')
-    ).reduce((namesAndUrls, section) => {
-      return {
-        ...namesAndUrls,
-        [section.querySelector('h3').textContent]: productSectionToNamesAndPageUrls(section)
-      };
-    }, {}
-    );
-  });
-}
-
-/**
- * Extract components and their HTML code from a component page
- * @param {Object} componentPage - Playwright page object for a component page
- * @returns {Promise<Object>} Object mapping component names to their HTML code
- */
-async function getComponentsAndData(componentPage) {
-  try {
-    return await componentPage.evaluate(async (delay) => {
-
-      // Helper function; needs to be defined in the code executing in the browser.
-      async function componentSectionToNameAndData(componentSection) {
-        let codeButton = componentSection.querySelector('div:has(> button:first-child + button:last-child) > button:last-child');
-        codeButton.click();
-        await new Promise(resolve => setTimeout(resolve, delay));
-
-        return {
-          [componentSection.querySelector('h2').textContent]: componentSection.querySelector('pre code').textContent
-        };
+      if (!pageComponents || pageComponents.length === 0) {
+        return null;
       }
 
-      return await Array.from(document.querySelectorAll('nav ~ div > section[id^="component-"]'))
-        .reduce(async (obj, section) => {
-          return {
-            ...(await obj),
-            ...(await componentSectionToNameAndData(section))
+      const isDesiredPair = components => components.every(c => (c.snippet.name == framework) && (c.snippet.version == version));
+
+      if (isDesiredPair(pageComponents)) {
+        this.logger.log(`   Page data exists for { ${framework}, v${version} }`);
+
+        // Transform to component objects with snippets arrays
+        const componentObjects = {};
+        pageComponents.forEach(component => {
+          componentObjects[component.name] = {
+            name: component.name,
+            snippets: [{
+              code: component.snippet.code,
+              name: component.snippet.name,
+              language: component.snippet.language,
+              version: component.snippet.version,
+              mode: component.snippet.mode,
+              supportsDarkMode: component.snippet.supportsDarkMode,
+              preview: component.snippet.preview
+            }]
           };
-        }, Promise.resolve({})
-        );
-    }, COMPONENT_LOAD_DELAY_MS);
-  } catch (error) {
-    console.error('Error extracting components:', error.message);
-    return {};
+        });
+
+        return componentObjects;
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.log(`   Error checking existing page data: ${error.message}`);
+      return null;
+    }
+  }
+
+  async initialize() {
+    this.context = await this.browser.newContext();
+    if (this.isTrace) {
+      await this.context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+      this.logger.log(`   Tracing started`);
+    }
+    await login(this.context, this.credentials, this.logger);
+  }
+
+  async processJob(job) {
+    this.page = await this.context.newPage();
+    try {
+      const result = await this.extractPageData(job);
+      return result;
+    } finally {
+      if(this.page && !this.page.isClosed()) {
+        await this.page.close();
+      }
+    }
+  }
+
+  async extractPageData(job) {
+    this.logger.log(`   Go to: ${job.url}`);
+    await this.page.goto(job.url, { waitUntil: 'networkidle' });
+    await this.page.waitForLoadState('networkidle');
+    const pageUrlPart = job.url.split('/').pop();
+
+    this.logger.log(`   Starting ${job.tasks.length} tasks`);
+
+    // Process tasks sequentially with fail-fast strategy
+    for (let i = 0; i < job.tasks.length; i++) {
+      const task = job.tasks[i];
+      this.logger.log(`   Running task: { ${task.framework}, v${task.version} }`);
+
+      try {
+        // Set up page state for this task
+        await this.showOneCode();
+        const frameworkAndVersionSelectors = await this.findFrameworkAndVersionSelectors();
+
+        // Check if data for this framework/version already exists on the page
+        const existingComponents = await this.checkExistingPageData(task.framework, task.version);
+
+        let componentData;
+        if (existingComponents) {
+          // Data exists, use it directly
+          componentData = existingComponents;
+          this.logger.log(`   Using existing page data for: { ${task.framework}, v${task.version} }`);
+        } else {
+          // Data doesn't exist, configure selectors and fetch it
+          componentData = await this.configureAndWaitForData(task, frameworkAndVersionSelectors, pageUrlPart);
+        }
+
+        // Validate component data
+        for (const name in componentData) {
+          const component = componentData[name];
+          if (!component.name || !component.snippets || component.snippets.length === 0) {
+            throw new CriticalDownloadError(`Component "${name}" was missing name or snippets.`);
+          }
+        }
+
+        this.logger.log(`🟢 Task succeeded for { ${task.framework}, v${task.version} } with ${Object.keys(componentData).length} components`);
+
+        task.status = 'succeeded';
+        task.data = componentData;
+
+      } catch (error) {
+        this.logger.log(`🟡 Task failed for { ${task.framework}, v${task.version} }: ${error.message}`);
+
+        // Mark this task as failed
+        task.status = 'failed';
+        task.error = error.message;
+
+        // Mark all remaining tasks as failed (not attempted) due to browser being stuck
+        for (let j = i + 1; j < job.tasks.length; j++) {
+          job.tasks[j].status = 'failed';
+          job.tasks[j].error = 'not attempted';
+        }
+
+        // Fail-fast: stop processing remaining tasks
+        break;
+      }
+    }
+
+    return job; // Return mutated job with task results
+  }
+
+  async configureAndWaitForData({ framework, version }, { frameworkSelect, versionSelect }, pageUrlPart) {
+    this.logger.log(`   Configuring page for: { ${framework}, v${version} }`);
+
+    // Set up response promise to wait for data after selector changes
+    const isDesiredPair = components => components.every(c => (c.snippet.name == framework) && (c.snippet.version == version));
+
+    const dataResponsePromise = this.page.waitForResponse(async (response) => {
+      if (response.request().method() !== 'GET' || !response.url().includes(pageUrlPart)) {
+        return false;
+      }
+      try {
+        const data = await response.json();
+        const components = data?.props?.subcategory?.components;
+        if (!components || components.length === 0) return false;
+        return isDesiredPair(components);
+      } catch (e) {
+        return false;
+      }
+    }, { timeout: CONFIG.timeouts.response });
+
+    // FIXME: Can we wait for the *request(s) to be sent* ?  That would tell us if there has been
+    // a hydration problem (no select options to click properly), hence no request sent, hence
+    // there will never be a response, so it's useless to wait for one.
+
+    // Optimization:
+    //
+    // Only change selectors that need changing (since extractPageData() already
+    // checked for existing data, we know at least one selector needs to change)
+    //
+    // PERFORMANCE NOTE: With slowMo: 750, each inputValue() call adds 750ms overhead.
+    // Current cost: 2 × inputValue() + potential selectOption() savings = net +750ms per call.
+    // This optimization may be counterproductive unless:
+    // 1. selectOption() with unchanged value triggers expensive network requests (unconfirmed)
+    // 2. Smart task ordering makes many selectors unchanged (future optimization)
+    //
+    // TODO: Test if selectOption() with same value is truly a no-op or triggers requests.
+    // If it's already a no-op, remove this optimization entirely.
+
+    // Check current selector values before changing
+    const currentFramework = await frameworkSelect.inputValue();
+    const currentVersion = await versionSelect.inputValue();
+
+    // Only change selectors that need changing
+    let changedSelectors = [];
+    if (currentFramework !== framework) {
+      await frameworkSelect.selectOption(framework);
+      changedSelectors.push(`framework: ${currentFramework} → ${framework}`);
+    } else {
+      changedSelectors.push(`framework: ${framework} (unchanged)`);
+    }
+
+    if (currentVersion !== version.toString()) {
+      await versionSelect.selectOption(version.toString());
+      changedSelectors.push(`version: ${currentVersion} → ${version}`);
+    } else {
+      changedSelectors.push(`version: ${version} (unchanged)`);
+    }
+
+    this.logger.log(`   Selector changes: ${changedSelectors.join(', ')}`);
+
+    // Wait for and extract the new data
+    const response = await dataResponsePromise;
+    const responseBody = await response.json();
+    const components = responseBody?.props?.subcategory?.components;
+    this.logger.log(`   Data extracted for { ${framework}, v${version} }`);
+
+    // Transform to component objects with snippets arrays
+    const componentObjects = {};
+    components.forEach(component => {
+      componentObjects[component.name] = {
+        name: component.name,
+        snippets: [{
+          code: component.snippet.code,
+          name: component.snippet.name,
+          language: component.snippet.language,
+          version: component.snippet.version,
+          mode: component.snippet.mode,
+          supportsDarkMode: component.snippet.supportsDarkMode,
+          preview: component.snippet.preview
+        }]
+      };
+    });
+
+    return componentObjects;
+  }
+
+  async showOneCode() {
+    const codeButton = this.page.locator(CONFIG.selectors.codeButtons).first();
+    try {
+      await codeButton.click();
+    } catch (e) {
+      throw new CriticalDownloadError(`Could not find framework or version select elements. ${e.message}`);
+    }
+  }
+
+  async findFrameworkAndVersionSelectors() {
+    const frameworkSelect = this.page.locator(CONFIG.selectors.frameworkSelect);
+    const versionSelect = this.page.locator(CONFIG.selectors.versionSelect);
+    try {
+      await frameworkSelect.waitFor();
+      await versionSelect.waitFor();
+    } catch (e) {
+      throw new CriticalDownloadError(`Could not find framework or version select elements. ${e.message}`);
+    }
+    return { frameworkSelect, versionSelect };
+  }
+
+  async shutdown() {
+    if (this.context) {
+      if (this.isTrace) {
+        try {
+          const traceFile = `tmp/trace-worker-${this.id}-${Date.now()}.zip`;
+          await this.context.tracing.stop({ path: traceFile });
+          this.logger.log(`   Trace saved to: ${traceFile}`);
+        } catch (error) {
+          this.logger.log(`   Warning: Failed to save trace file: ${error.message}`);
+        }
+      }
+      await this.context.close();
+    }
   }
 }
 
-/**
- * Authentication handling
- * @param {Object} options - Command line options
- * @returns {Promise<Object>} Authentication cookies
- */
-async function handleAuthentication(options) {
-  const loginUrl = 'https://tailwindcss.com/plus/login';
+// ===================================================================================
+//
+//  Main Downloader Class
+//
+// ===================================================================================
 
-  if (options.auth) {
-    // User wants to authenticate - save and use cookies
-    // Create directory if it doesn't exist
-    const dirPath = path.dirname(options.cookiesPath);
-    if (!fs.existsSync(dirPath)) {
-      fs.mkdirSync(dirPath, { recursive: true });
+class TailwindPlusDownloader {
+  constructor(options) {
+    this.options = options;
+    this.startTime = new Date();
+
+    // Always generate version from startup time
+    this.version = this.startTime.toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
+
+    const baseLogger = new Logger({
+      isDebug: !!this.options.debugLog,
+      logFilePath: this.options.debugLog || this.options.output.replace(/\.json$/, '.log'),
+    });
+
+    // Create main logger with [Main] prefix
+    this.logger = {
+      log: (message) => baseLogger.log(`[Main] ${message}`),
+      close: () => baseLogger.close()
+    };
+
+    // Store base logger for worker use
+    this.baseLogger = baseLogger;
+    this.browser = null;
+    this.urlQueue = [];
+    this.results = [];
+    this.credentials = null;
+    this.discoveredUrlCount = 0;
+    this.totalComponentCount = 0;
+  }
+
+  getDownloadTasks() {
+    const tasks = [];
+    for (const framework of CONFIG.download.frameworks) {
+      for (const version of CONFIG.download.versions) {
+        tasks.push({ framework, version });
+      }
     }
-    return await saveCookies(loginUrl, options.cookiesPath);
-  } else {
-    // Try to load existing cookies
-    const cookies = loadCookiesFromFile(options.cookiesPath);
-    if (!cookies) {
-      console.error(`No cookies found at ${options.cookiesPath}`);
-      console.error('Please either:');
-      console.error('  - Run with --auth to authenticate');
-      console.error('  - Use --cookies-path=<FILE> to specify existing cookies');
+    return tasks;
+  }
+
+  async run() {
+    this.logger.log('--- Started ---');
+    try {
+      this._loadCredentials(this.options.credentials);
+      await this._initializeBrowser();
+      const discoveryResult = await this._discoverComponentUrls(this.browser);
+      this.discoveredUrlCount = discoveryResult.urlCount;
+      this.totalComponentCount = discoveryResult.totalComponentCount;
+      this._populateUrlQueueFromHierarchy(discoveryResult.hierarchicalData);
+      await this._createAndRunWorkers();
+      this._processAndSaveResults();
+    } catch (error) {
+      this.logger.log(`🔴 Error uncaught: ${error.message}`);
       process.exit(1);
+    } finally {
+      await this._shutdown();
     }
-    return cookies;
+  }
+
+  _loadCredentials(credentialsPath) {
+    if (!fs.existsSync(credentialsPath)) {
+      throw new CriticalDownloadError(`No credentials found at ${credentialsPath}`);
+    }
+    this.credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
+    this.logger.log('   Credentials loaded successfully');
+  }
+
+  async _initializeBrowser() {
+    this.logger.log('   Initializing shared browser...');
+    this.browser = await chromium.launch({
+      headless: !this.options.debugHeaded,
+      slowMo: this.options.slowMo
+    });
+  }
+
+  _loadUrlsFromFile(filePath) {
+    if (!fs.existsSync(filePath)) {
+      throw new CriticalDownloadError(`URL file not found at: ${filePath}`);
+    }
+    return fs.readFileSync(filePath, 'utf8').split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+  }
+
+  async _discoverComponentUrls(browser) {
+    this.logger.log('   Discovering hierarchical component structure...');
+    const discoveryContext = await browser.newContext();
+    const page = await discoveryContext.newPage();
+    try {
+      await login(discoveryContext, this.credentials, this.logger);
+      this.logger.log(`   Discovering component URLs from: ${CONFIG.urls.discovery}`);
+      await page.goto(CONFIG.urls.discovery, { waitUntil: 'networkidle' });
+
+      const appElement = await page.locator('div#app');
+      if ((await appElement.count()) === 0) {
+        throw new Error('Could not find the root element \'div#app\' on the page.');
+      }
+      const jsonString = await appElement.getAttribute('data-page');
+      if (!jsonString) {
+        throw new Error('The \'data-page\' attribute on \'div#app\' was empty or not found.');
+      }
+
+      const componentData = JSON.parse(jsonString);
+      const products = componentData?.props?.products;
+      if (!products || !Array.isArray(products)) {
+        throw new Error('Expected \'props.products\' to be an array in the data-page JSON.');
+      }
+
+      let urlCount = 0;
+      let totalComponentCount = 0;
+      const hierarchicalData = products.reduce((prodAcc, product) => {
+        if (!product.name || !Array.isArray(product.categories)) throw new Error(`Product missing name/categories.`);
+        prodAcc[product.name] = product.categories.reduce((catAcc, category) => {
+          if (!category.name || !Array.isArray(category.subcategories)) throw new Error(`Category missing name/subcategories.`);
+          catAcc[category.name] = category.subcategories.map((subcategory) => {
+            if (!subcategory.name || !subcategory.url || !subcategory.components) throw new Error(`Subcategory missing name/url/components.`);
+            urlCount++;
+            const match = subcategory.components.match(/^(?<componentCount>\d+)/);
+            if (match) totalComponentCount += parseInt(match.groups.componentCount, 10);
+            return { name: subcategory.name, url: subcategory.url };
+          });
+          return catAcc;
+        }, {});
+        return prodAcc;
+      }, {});
+
+      this.logger.log(`   Discovered ${urlCount} component URLs with a total of ${totalComponentCount} individual components.`);
+      return { hierarchicalData, urlCount, totalComponentCount };
+    } finally {
+      await discoveryContext.close();
+    }
+  }
+
+  _populateUrlQueueFromHierarchy(hierarchicalData) {
+    this.logger.log('   Populating job queue from discovered hierarchy...');
+    for (const product in hierarchicalData) {
+      for (const category in hierarchicalData[product]) {
+        for (const subcategory of hierarchicalData[product][category]) {
+          const job = {
+            url: subcategory.url,
+            hierarchy: { product, category, subcategory: subcategory.name },
+            tasks: this.getDownloadTasks(),
+            retries: 0
+          };
+          this.urlQueue.push(job);
+        }
+      }
+    }
+
+    if (this.options.debugUrlFile) {
+      this.logger.log(`   URL file mode enabled. Filtering by: ${this.options.debugUrlFile}`);
+      const debugUrlsToProcess = this._loadUrlsFromFile(this.options.debugUrlFile);
+      this.urlQueue = this.urlQueue.filter(job => debugUrlsToProcess.includes(job.url));
+    }
+    if (this.options.debugShortTest) {
+      this.logger.log(`   Short test mode: Limiting to 2 jobs.`);
+      this.urlQueue = this.urlQueue.slice(0, 2);
+    }
+    this.logger.log(`   Job queue populated with ${this.urlQueue.length} jobs.`);
+  }
+
+  async _createAndRunWorkers() {
+    const actualConcurrency = Math.min(this.options.workers, this.urlQueue.length);
+    this.logger.log(`   Starting worker pool with concurrency of ${actualConcurrency} (${this.urlQueue.length} jobs)...`);
+
+    const workers = [];
+    for (let i = 0; i < actualConcurrency; i++) {
+      const worker = new Worker(i + 1, this.browser, this.credentials, this.baseLogger, this.options.debugTrace);
+      await worker.initialize();
+      workers.push(worker);
+    }
+
+    const workerPromises = workers.map(worker => this._runWorker(worker));
+
+    try {
+      await Promise.all(workerPromises);
+    } finally {
+      await Promise.all(workers.map(worker => worker.shutdown()));
+    }
+  }
+
+  async _runWorker(worker) {
+    while (this.urlQueue.length > 0) {
+      const job = this.urlQueue.shift();
+      if (!job) continue;
+
+      try {
+        this.logger.log(`🚀 Worker ${worker.id} start: ${job.url}`);
+        const result = await worker.processJob(job);
+        this._processJobResult(result);
+        this.logger.log(`✅ Worker ${worker.id} finish: ${job.url}`);
+      } catch (error) {
+        this.logger.log(`🔴 Worker ${worker.id} critical error: ${job.url}: ${error.message}`);
+
+        if (error instanceof CriticalDownloadError) {
+          this.logger.log(`🔴 Critical error: Halting execution.`);
+          if (this.options.debugHeaded && worker.page) {
+            await worker.page.pause();
+          }
+          throw error;
+        }
+
+        // For critical errors, mark entire job as failed
+        this.results.push({ job: { url: job.url, hierarchy: job.hierarchy }, error: error.message });
+      }
+    }
+  }
+
+  _processJobResult(result) {
+    // Extract successful tasks with data
+    const successfulTasks = result.tasks.filter(task => task.status === 'succeeded');
+
+    if (successfulTasks.length > 0) {
+      // Merge component data from successful tasks by concatenating snippets arrays
+      const mergedData = {};
+      const taskSummary = successfulTasks.map(t => `${t.framework}v${t.version}`).join(', ');
+
+      successfulTasks.forEach(task => {
+        for (const componentName in task.data) {
+          const component = task.data[componentName];
+
+          if (!mergedData[componentName]) {
+            mergedData[componentName] = {
+              name: component.name,
+              snippets: []
+            };
+          }
+
+          // Concatenate snippets arrays
+          mergedData[componentName].snippets = mergedData[componentName].snippets.concat(component.snippets);
+        }
+      });
+
+      const componentCount = Object.keys(mergedData).length;
+      this.logger.log(`   Successfully merged data from [${taskSummary}] for ${result.url} (${componentCount} components)`);
+
+      // Store successful results in expected format
+      this.results.push({
+        job: { url: result.url, hierarchy: result.hierarchy },
+        data: mergedData
+      });
+    }
+
+    // Handle failed tasks for re-queuing
+    const failedTasks = result.tasks.filter(task => task.status === 'failed');
+    if (failedTasks.length > 0) {
+      if (result.retries < CONFIG.retries.maxRetries) {
+        const job = {
+          url: result.url,
+          hierarchy: result.hierarchy,
+          // Strip status/error properties by creating clean task objects
+          tasks: failedTasks.map(({framework, version}) => ({framework, version})),
+          retries: result.retries + 1
+        };
+        this.urlQueue.push(job);
+        this.logger.log(`↪️ Requeuing ${failedTasks.length} failed tasks for ${result.url} (retry ${job.retries}/${CONFIG.retries.maxRetries})`);
+      } else {
+        this.logger.log(`🔴 Final failure: ${result.url} failed after ${result.retries} attempts. Not requeuing.`);
+        this.results.push({
+          job: { url: result.url, hierarchy: result.hierarchy },
+          error: `Job failed after ${result.retries} attempts`
+        });
+      }
+    }
+  }
+
+  _countComponents(data) {
+    let count = 0;
+    function countRecursive(obj) {
+      for (const key in obj) {
+        if (typeof obj[key] === 'object' && obj[key] !== null) {
+          if (obj[key].snippets && Array.isArray(obj[key].snippets)) {
+            count++;
+          } else {
+            countRecursive(obj[key]);
+          }
+        }
+      }
+    }
+    countRecursive(data);
+    return count;
+  }
+
+  _processAndSaveResults() {
+    this.logger.log('   All workers finished. Processing and saving results...');
+    const successfulDownloads = this.results.filter(r => r.data);
+    const failedDownloads = this.results.filter(r => r.error);
+
+    if (failedDownloads.length > 0) {
+      this.logger.log(`⚠️  Warning: ${failedDownloads.length} jobs failed to download`);
+      failedDownloads.forEach(failure => {
+        this.logger.log(`   Failed: ${failure.job.url} - ${failure.error}`);
+      });
+    }
+
+    this.logger.log('   Building hierarchical structure...');
+    const hierarchicalData = {};
+
+    successfulDownloads.forEach(result => {
+      const { job, data: pageData } = result;
+      const { product, category, subcategory } = job.hierarchy;
+
+      if (!hierarchicalData[product]) hierarchicalData[product] = {};
+      if (!hierarchicalData[product][category]) hierarchicalData[product][category] = {};
+      if (!hierarchicalData[product][category][subcategory]) hierarchicalData[product][category][subcategory] = {};
+
+      // Merge component data by concatenating snippets arrays
+      for (const componentName in pageData) {
+        const component = pageData[componentName];
+
+        if (!hierarchicalData[product][category][subcategory][componentName]) {
+          hierarchicalData[product][category][subcategory][componentName] = {
+            name: component.name,
+            snippets: []
+          };
+        }
+
+        // Concatenate snippets arrays from all jobs for this component
+        hierarchicalData[product][category][subcategory][componentName].snippets =
+          hierarchicalData[product][category][subcategory][componentName].snippets.concat(component.snippets);
+      }
+    });
+
+    const endTime = new Date();
+    const durationMs = endTime - this.startTime;
+    const durationSec = (durationMs / 1000).toFixed(1);
+
+    const componentCount = this._countComponents(hierarchicalData);
+
+    const finalOutput = {
+      version: this.version,
+      downloaded_at: this.startTime.toISOString(),
+      component_count: componentCount,
+      download_duration: `${durationSec}s`,
+      downloader_version: '2.0.0',
+      tailwindplus: hierarchicalData
+    };
+
+    fs.writeFileSync(this.options.output, JSON.stringify(finalOutput, null, 2));
+
+    const stats = fs.statSync(this.options.output);
+    const sizeKB = Math.round(stats.size / 1024);
+    const message = `Download complete! ${componentCount} components (${sizeKB}KB) saved to ${this.options.output}`;
+
+    // Count unique URLs processed (not result entries)
+    const uniqueSuccessfulUrls = new Set(successfulDownloads.map(r => r.job.url));
+    const uniqueFailedUrls = new Set(failedDownloads.map(r => r.job.url));
+
+    // Generate summary messages as plain strings
+    const summaryLines = [
+      `Processed ${uniqueSuccessfulUrls.size} successful and ${uniqueFailedUrls.size} failed URLs of ${this.discoveredUrlCount} discovered.`,
+      `Total component count from discovery: ${this.totalComponentCount}.`,
+      message
+    ];
+
+    if (failedDownloads.length > 0) {
+      summaryLines.push(`Note: ${failedDownloads.length} jobs failed and were excluded from results`);
+    }
+
+    // Output to console or logger based on debug mode
+    if (this.options.debugLog) {
+      // Debug mode: use logger with timestamps/prefixes (current behavior)
+      summaryLines.forEach(line => this.logger.log(`   ${line}`));
+    } else {
+      // Normal mode: clean console output without timestamps
+      summaryLines.forEach(line => console.log(line));
+    }
+  }
+
+  async _shutdown() {
+    this.logger.log('--- Shutting down ---');
+    if (this.browser) {
+      await this.browser.close();
+    }
+    this.logger.close();
   }
 }
 
-/**
- * Result processing and validation
- * @param {Object} componentData - The scraped component data
- * @param {Object} options - Command line options
- */
-function processAndSaveResults(componentData, options) {
-  // Basic validation - ensure we got some data
-  if (!componentData || Object.keys(componentData).length === 0) {
-    console.error('Error: Downloaded data appears to be empty');
-    process.exit(1);
+// ===================================================================================
+//
+//  Command-Line Argument Parsing and Main Execution
+//
+// ===================================================================================
+
+function parseArgs() {
+  const argv = yargs(hideBin(process.argv))
+    .version(false)
+    .strict()
+    .option('output', {
+      type: 'string',
+      requiresArg: true,
+      describe: 'Path to save downloaded components (default: auto-generated)'
+    })
+    .option('workers', {
+      type: 'number',
+      requiresArg: true,
+      default: 5,
+      describe: 'Number of pages to download in parallel'
+    })
+    .option('cookies', {
+      type: 'string',
+      requiresArg: true,
+      describe: 'Path to cookies file'
+    })
+    .option('slow-mo', {
+      type: 'number',
+      requiresArg: true,
+      default: CONFIG.timeouts.slowMo,
+      describe: 'Slow down browser actions by specified milliseconds'
+    })
+    .option('credentials', {
+      type: 'string',
+      requiresArg: true,
+      default: 'credentials.json',
+      describe: 'Path to credentials file'
+    })
+    .option('debug-short-test', {
+      type: 'boolean',
+      describe: 'Limits download to a few sections for fast testing'
+    })
+    .option('debug-log', {
+      describe: 'Enable logging to file and console (default: same as output with .log extension)'
+    })
+    .option('debug-url-file', {
+      type: 'string',
+      requiresArg: true,
+      describe: 'Process only specific URLs from a file'
+    })
+    .option('debug-trace', {
+      type: 'boolean',
+      describe: 'Enable playwright tracing for debugging'
+    })
+    .option('debug-headed', {
+      type: 'boolean',
+      describe: 'Run browser in headed mode (shows browser window)'
+    })
+    .usage('Usage: $0 [options]')
+    .help('help')
+    .alias('help', 'h')
+    .parseSync();
+
+  // Set default output filename if not specified
+  if (!argv.output) {
+    // Generate version timestamp that will be used in both filename and JSON
+    const version = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
+    argv.output = `tailwindplus-components-${version}.json`;
   }
 
-  // Save results
-  fs.writeFileSync(options.outputPath, JSON.stringify(componentData, null, 2));
+  // Handle debug-log without value
+  if (argv.debugLog === true) {
+    argv.debugLog = argv.output.replace(/\.json$/, '.log');
+  }
 
-  // Success message with file size
-  const stats = fs.statSync(options.outputPath);
-  const sizeKB = Math.round(stats.size / 1024);
-  log(`Download complete! ${sizeKB}KB saved to ${options.outputPath}`, false, options.debug);
+  return {
+    output: argv.output,
+    workers: argv.workers,
+    cookies: argv.cookies,
+    slowMo: argv.slowMo,
+    credentials: argv.credentials,
+    debugShortTest: argv.debugShortTest,
+    debugLog: argv.debugLog,
+    debugUrlFile: argv.debugUrlFile,
+    debugTrace: argv.debugTrace,
+    debugHeaded: argv.debugHeaded
+  };
 }
 
-/**
- * Input validation
- * @param {Object} options - Command line options to validate
- */
-function validateInputs(options) {
-  const rootUrl = 'https://tailwindcss.com/plus/ui-blocks';
-  const loginUrl = 'https://tailwindcss.com/plus/login';
-
-  // Validate URLs
-  if (!isValidUrl(rootUrl)) {
-    console.error('Error: Invalid root URL');
-    process.exit(1);
-  }
-  if (!isValidUrl(loginUrl)) {
-    console.error('Error: Invalid login URL');
-    process.exit(1);
-  }
-
-  // Validate file paths
-  if (!isValidFilePath(options.outputPath)) {
-    console.error(`Error: Invalid output path: ${options.outputPath}`);
-    process.exit(1);
-  }
-  if (!isValidFilePath(options.cookiesPath)) {
-    console.error(`Error: Invalid cookies path: ${options.cookiesPath}`);
-    process.exit(1);
-  }
-}
-
-/**
- * Main execution function
- */
 async function main() {
-  const args = process.argv.slice(2);
-  const options = parseArgs(args);
-
-  if (options.help) {
-    showHelp();
-    return;
-  }
-
-  validateInputs(options);
-  const cookies = await handleAuthentication(options);
-
-  const rootUrl = 'https://tailwindcss.com/plus/ui-blocks';
-  const componentData = await scrapeTailwindPlus(rootUrl, cookies, options.outputPath, options.debug);
-
-  await processAndSaveResults(componentData, options);
+  const options = parseArgs();
+  const downloader = new TailwindPlusDownloader(options);
+  await downloader.run();
 }
 
 main().catch(console.error);

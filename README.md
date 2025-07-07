@@ -5,7 +5,7 @@
 
 # TailwindPlus Downloader
 
-A downloader for TailwindPlus component HTML, and a diff-tool to compare HTML between downloads.
+A downloader for TailwindPlus components in HTML, React, and Vue formats across Tailwind CSS v3 and v4, and a diff-tool to compare components between downloads.
 
 TailwindPlus component HTML is downloaded into a structured JSON file, preserving the component
 organization.  The JSON output allows the use of `jq` for programmatic access.  For example, using
@@ -15,7 +15,7 @@ The diff-tool is helpful because TailwindPlus undergoes small fixes for which th
 
 ## Features
 
-- Downloads all UI components HTML into a JSON file, preserving the hierarchical organization
+- Downloads all UI components in HTML, React, and Vue formats for both Tailwind CSS v3 and v4 into a JSON file, preserving the hierarchical organization
 - Timestamped output files allow comparing component versions between downloads
 - Handles authentication via cookies
 
@@ -38,11 +38,12 @@ def walk:
   . as $in |
     if   type == "object" then reduce keys[] as $key ({}; . + {($key): ($in[$key] | walk)})
     elif type == "array"  then map(walk)
-    elif type == "string" then "<HTML>"
+    elif type == "string" then "<CONTENT>"
     else .
     end;
 
-walk
+# Keep metadata, but replace .tailwindplus stripping content
+. + {"tailwindplus": (.tailwindplus | walk)}
 ' tailwindplus-components-*.json > tailwindplus-skeleton.json
 ```
 
@@ -50,7 +51,7 @@ Add only the skeleton file as context to a coding session or project. Then provi
 the full file with `jq` using a command execution MCP server and prompt instructions to use a tool
 in conjunction with the skeleton file.  An MCP `jq` tool call will be similar to:
 
-`jq '."Application UI".Elements.Buttons."Primary buttons"' --raw-output path/to/tailwindplus-components.json`
+`jq '.tailwindplus."Application UI".Elements.Buttons."Primary buttons".v4.html' --raw-output path/to/tailwindplus-components.json`
 
 ## Setup
 
@@ -118,16 +119,33 @@ The downloader produces a JSON file with this structure:
 
 ```json
 {
-  "Marketing": {
-    "Page Sections": {
-      "Hero Sections": {
-        "Split with screenshot on dark": "<div class=\"...\">...</div>",
-        "Split with screenshot": "<div class=\"...\">...</div>"
+  "version": "2025-01-08-123456",
+  "downloaded_at": "2025-01-08T12:34:56Z",
+  "component_count": 847,
+  "download_duration": "4.2s",
+  "downloader_version": "2.0.0",
+  "tailwindplus": {
+    "Marketing": {
+      "Page Sections": {
+        "Hero Sections": {
+          "Split with screenshot on dark": {
+            "v4": {
+              "html": "<div class=\"...\">...</div>",
+              "react": "<div className=\"...\">...</div>",
+              "vue": "<div class=\"...\">...</div>"
+            },
+            "v3": {
+              "html": "<div class=\"...\">...</div>",
+              "react": "<div className=\"...\">...</div>",
+              "vue": "<div class=\"...\">...</div>"
+            }
+          }
+        }
       }
+    },
+    "Application UI": {
+      ...
     }
-  },
-  "Application UI": {
-    ...
   }
 }
 ```
