@@ -1,5 +1,6 @@
 tailwindplus-components-*.json
-cookies.json
-temp*.html
+tailwindplus-components-*.log
+
 diffs/
+
 credentials.json
