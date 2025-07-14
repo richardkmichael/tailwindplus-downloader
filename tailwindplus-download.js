@@ -440,7 +440,7 @@ class TailwindPlusDownloader {
     return tasks;
   }
 
-  async run() {
+  async startup() {
     this.logger.log('--- Started ---');
     try {
       this._loadCredentials(this.options.credentials);
@@ -469,6 +469,46 @@ class TailwindPlusDownloader {
       this.logger.log(`   ${message}`);
     } else {
       console.log(message);
+    }
+  }
+
+  _showShutdownMessage() {
+    const successfulDownloads = this.results.filter(r => r.data);
+    const failedDownloads = this.results.filter(r => r.error);
+
+    const endTime = new Date();
+    const durationMs = endTime - this.startTime;
+    const durationSec = (durationMs / 1000).toFixed(1);
+
+    const stats = fs.statSync(this.options.output);
+    const sizeKB = Math.round(stats.size / 1024);
+
+    // Read back the saved file to get component count
+    const savedData = JSON.parse(fs.readFileSync(this.options.output, 'utf8'));
+    const componentCount = savedData.component_count;
+
+    const message = `Download complete! ${componentCount} components (${sizeKB}KB) saved to ${this.options.output}`;
+
+    // Count unique URLs processed (not result entries)
+    const uniqueSuccessfulUrls = new Set(successfulDownloads.map(r => r.job.url));
+    const uniqueFailedUrls = new Set(failedDownloads.map(r => r.job.url));
+
+    // Generate summary messages as plain strings
+    const summaryLines = [
+      `Processed ${uniqueSuccessfulUrls.size} successful and ${uniqueFailedUrls.size} failed URLs of ${this.discoveredUrlCount} discovered.`,
+      `Total component count from discovery: ${this.totalComponentCount}.`,
+      message
+    ];
+
+    if (failedDownloads.length > 0) {
+      summaryLines.push(`Note: ${failedDownloads.length} jobs failed and were excluded from results`);
+    }
+
+    // Output to console or logger based on debug mode (same pattern as startup)
+    if (this.options.debugLog) {
+      summaryLines.forEach(line => this.logger.log(`   ${line}`));
+    } else {
+      summaryLines.forEach(line => console.log(line));
     }
   }
 
@@ -760,38 +800,11 @@ For more options, run: node tailwindplus-download.js --help`);
     };
 
     fs.writeFileSync(this.options.output, JSON.stringify(finalOutput, null, 2));
-
-    const stats = fs.statSync(this.options.output);
-    const sizeKB = Math.round(stats.size / 1024);
-    const message = `Download complete! ${componentCount} components (${sizeKB}KB) saved to ${this.options.output}`;
-
-    // Count unique URLs processed (not result entries)
-    const uniqueSuccessfulUrls = new Set(successfulDownloads.map(r => r.job.url));
-    const uniqueFailedUrls = new Set(failedDownloads.map(r => r.job.url));
-
-    // Generate summary messages as plain strings
-    const summaryLines = [
-      `Processed ${uniqueSuccessfulUrls.size} successful and ${uniqueFailedUrls.size} failed URLs of ${this.discoveredUrlCount} discovered.`,
-      `Total component count from discovery: ${this.totalComponentCount}.`,
-      message
-    ];
-
-    if (failedDownloads.length > 0) {
-      summaryLines.push(`Note: ${failedDownloads.length} jobs failed and were excluded from results`);
-    }
-
-    // Output to console or logger based on debug mode
-    if (this.options.debugLog) {
-      // Debug mode: use logger with timestamps/prefixes (current behavior)
-      summaryLines.forEach(line => this.logger.log(`   ${line}`));
-    } else {
-      // Normal mode: clean console output without timestamps
-      summaryLines.forEach(line => console.log(line));
-    }
   }
 
   async _shutdown() {
     this.logger.log('--- Shutting down ---');
+    this._showShutdownMessage();
     if (this.browser) {
       await this.browser.close();
     }
@@ -891,7 +904,7 @@ function parseArgs() {
 async function main() {
   const options = parseArgs();
   const downloader = new TailwindPlusDownloader(options);
-  await downloader.run();
+  await downloader.startup();
 }
 
 main().catch(console.error);
