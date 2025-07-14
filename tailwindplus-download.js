@@ -450,6 +450,8 @@ class TailwindPlusDownloader {
       await this._createAndRunWorkers();
       this._processAndSaveResults();
     } catch (error) {
+      // Always show critical errors to the user, regardless of debug mode
+      console.error(`🔴 Error: ${error.message}`);
       this.logger.log(`🔴 Error uncaught: ${error.message}`);
       process.exit(1);
     } finally {
@@ -459,7 +461,17 @@ class TailwindPlusDownloader {
 
   _loadCredentials(credentialsPath) {
     if (!fs.existsSync(credentialsPath)) {
-      throw new CriticalDownloadError(`No credentials found at ${credentialsPath}`);
+      throw new CriticalDownloadError(`No credentials found at ${credentialsPath}
+
+To get started, create a credentials file with your TailwindPlus login details:
+{
+  "email": "your-email@example.com",
+  "password": "your-password"
+}
+
+Save this as '${credentialsPath}' or specify a different path with --credentials
+
+For more options, run: node tailwindplus-download.js --help`);
     }
     this.credentials = JSON.parse(fs.readFileSync(credentialsPath, 'utf8'));
     this.logger.log('   Credentials loaded successfully');
