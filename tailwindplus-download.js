@@ -444,6 +444,7 @@ class TailwindPlusDownloader {
     this.logger.log('--- Started ---');
     try {
       this._loadCredentials(this.options.credentials);
+      this._showStartupMessage();
       await this._initializeBrowser();
       const discoveryResult = await this._discoverComponentUrls(this.browser);
       this.discoveredUrlCount = discoveryResult.urlCount;
@@ -458,6 +459,16 @@ class TailwindPlusDownloader {
       process.exit(1);
     } finally {
       await this._shutdown();
+    }
+  }
+
+  _showStartupMessage() {
+    const message = `Starting download to ${this.options.output} with ${this.options.workers} workers`;
+
+    if (this.options.debugLog) {
+      this.logger.log(`   ${message}`);
+    } else {
+      console.log(message);
     }
   }
 
