@@ -11,6 +11,9 @@
   },
   "author": "Richard Michael",
   "license": "MIT",
+  "bin": {
+    "tailwindplus-download": "tailwindplus-download.js"
+  },
   "dependencies": {
     "playwright": "^1.52.0",
     "yargs": "^18.0.0"
