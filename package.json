@@ -12,10 +12,7 @@
   "author": "Richard Michael",
   "license": "MIT",
   "dependencies": {
-    "chalk": "^5.4.1",
     "playwright": "^1.52.0",
-    "terminal-columns": "^2.0.0",
-    "terminal-kit": "^3.1.2",
     "yargs": "^18.0.0"
   },
   "devDependencies": {
