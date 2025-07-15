@@ -1,27 +1,26 @@
-> [!WARNING]
-> Thise was a "quick" yak shave, with a low bar and no tests.  It works.
->
-> Improvements are welcome, but don't sweat it. :sunglasses:
-
 # TailwindPlus Downloader
 
-A downloader for TailwindPlus components in HTML, React, and Vue formats across Tailwind CSS v3 and v4, and a diff-tool to compare components between downloads.
+A downloader for TailwindPlus components in HTML, React, and Vue formats across Tailwind CSS v3 and
+v4, with diff tools to compare components between downloads.
 
 TailwindPlus component HTML is downloaded into a structured JSON file, preserving the component
 organization.  The JSON output allows the use of `jq` for programmatic access.  For example, using
 an LLM coding assistant such as Claude Code; see below for details.
 
-The diff-tool is helpful because TailwindPlus undergoes small fixes for which there is no changelog.
+The diff tools are helpful because TailwindPlus undergoes small fixes for which there is no changelog.
 
 ## Features
 
-- Downloads all UI components in HTML, React, and Vue formats for both Tailwind CSS v3 and v4 into a JSON file, preserving the hierarchical organization
+- Downloads all UI components in HTML, React, and Vue formats for both Tailwind CSS v3 and v4 into a
+  JSON file, preserving the hierarchical organization
+- Parallel worker pool with retries for fast, reliable downloads
 - Timestamped output files allow comparing component versions between downloads
-- Handles authentication via cookies
+- Handles authentication via stored credentials
+- Configurable slowMo timing to work around React hydration issues
 
 ### Using TailwindPlus with an agent
 
-A small "skeleton" file with component names, but without full HTML, can be useful for an LLM coding
+A small "skeleton" file with component names, but without full code, can be useful for an LLM coding
 assistant (Claude Desktop / Code, etc.), since the complete component file is too large (~6 MB) for
 context and often unnecessary.
 
@@ -36,13 +35,16 @@ Generate the skeleton file with `jq`:
 jq '
 def walk:
   . as $in |
-    if   type == "object" then reduce keys[] as $key ({}; . + {($key): ($in[$key] | walk)})
-    elif type == "array"  then map(walk)
-    elif type == "string" then "<CONTENT>"
+    if type == "object" then
+      reduce keys[] as $key ({}; . + {($key): ($in[$key] | walk)})
+    elif type == "array" then
+      map(walk)
+    elif type == "string" then
+      if length > 100 then "<CONTENT>" else . end
     else .
     end;
 
-# Keep metadata, but replace .tailwindplus stripping content
+# Keep metadata, replace large string content in .tailwindplus
 . + {"tailwindplus": (.tailwindplus | walk)}
 ' tailwindplus-components-*.json > tailwindplus-skeleton.json
 ```
@@ -51,7 +53,7 @@ Add only the skeleton file as context to a coding session or project. Then provi
 the full file with `jq` using a command execution MCP server and prompt instructions to use a tool
 in conjunction with the skeleton file.  An MCP `jq` tool call will be similar to:
 
-`jq '.tailwindplus."Application UI".Elements.Buttons."Primary buttons".v4.html' --raw-output path/to/tailwindplus-components.json`
+`jq '.tailwindplus.Marketing."Page Sections"."Hero Sections"."Simple centered".snippets[] | select(.name == "html" and .version == 4) | .code' --raw-output path/to/tailwindplus-components.json`
 
 ## Setup
 
@@ -60,12 +62,12 @@ in conjunction with the skeleton file.  An MCP `jq` tool call will be similar to
    npm install
    ```
 
-2. Authenticate and download components:
+2. Create credentials file:
    ```bash
-   node tailwindplus-download.js --auth
+   echo '{"email": "your-email@example.com", "password": "your-password"}' > credentials.json
    ```
 
-3. Run subsequent downloads (uses saved cookies):
+3. Download components:
    ```bash
    node tailwindplus-download.js
    ```
@@ -75,20 +77,29 @@ in conjunction with the skeleton file.  An MCP `jq` tool call will be similar to
 ### Download Script
 
 ```bash
-# Authenticate and download (first time)
-node tailwindplus-download.js --auth
-
-# Download with existing cookies
+# Basic download
 node tailwindplus-download.js
 
 # Custom output location
-node tailwindplus-download.js --output-path=./my-components.json
+node tailwindplus-download.js --output ./my-components.json
 
-# Custom cookie location
-node tailwindplus-download.js --cookies-path=./my-cookies.json
+# Custom credentials file
+node tailwindplus-download.js --credentials ./my-credentials.json
 
-# Debug mode (show browser)
-node tailwindplus-download.js --debug
+# Adjust number of parallel workers
+node tailwindplus-download.js --workers 3
+
+# Debug mode (show browser window)
+node tailwindplus-download.js --debug-headed
+
+# Enable detailed logging
+node tailwindplus-download.js --debug-log
+
+# Short test (only first 2 sections)
+node tailwindplus-download.js --debug-short-test
+
+# Slow down browser actions (useful for debugging)
+node tailwindplus-download.js --slow-mo 1000
 
 # Help
 node tailwindplus-download.js --help
@@ -119,32 +130,49 @@ The downloader produces a JSON file with this structure:
 
 ```json
 {
-  "version": "2025-01-08-123456",
-  "downloaded_at": "2025-01-08T12:34:56Z",
-  "component_count": 847,
-  "download_duration": "4.2s",
+  "version": "2025-07-14-235056",
+  "downloaded_at": "2025-07-14T23:50:56Z",
+  "component_count": 33,
+  "download_duration": "27.2s",
   "downloader_version": "2.0.0",
   "tailwindplus": {
     "Marketing": {
       "Page Sections": {
         "Hero Sections": {
-          "Split with screenshot on dark": {
-            "v4": {
-              "html": "<div class=\"...\">...</div>",
-              "react": "<div className=\"...\">...</div>",
-              "vue": "<div class=\"...\">...</div>"
-            },
-            "v3": {
-              "html": "<div class=\"...\">...</div>",
-              "react": "<div className=\"...\">...</div>",
-              "vue": "<div class=\"...\">...</div>"
-            }
+          "Simple centered": {
+            "name": "Simple centered",
+            "snippets": [
+              {
+                "code": "<div class=\"...\">...</div>",
+                "language": "html",
+                "mode": "light",
+                "name": "html",
+                "preview": "...",
+                "supportsDarkMode": false,
+                "version": 4
+              },
+              {
+                "code": "<div className=\"...\">...</div>",
+                "language": "jsx",
+                "mode": "light",
+                "name": "react",
+                "preview": "...",
+                "supportsDarkMode": false,
+                "version": 4
+              },
+              {
+                "code": "<div class=\"...\">...</div>",
+                "language": "vue",
+                "mode": "light",
+                "name": "vue",
+                "preview": "...",
+                "supportsDarkMode": false,
+                "version": 4
+              }
+            ]
           }
         }
       }
-    },
-    "Application UI": {
-      ...
     }
   }
 }
@@ -152,14 +180,14 @@ The downloader produces a JSON file with this structure:
 
 ## How It Works
 
-The script uses Playwright automation to handle the dynamic JavaScript site, executing DOM queries
-in the browser context.  The `--auth` flag displays the Playwright browser for manual login and
-saves the cookies for future use.
+The script uses Playwright automation with a parallel worker pool architecture to handle the dynamic JavaScript site. It includes configurable slowMo timing to work around React hydration issues and ensure reliable data extraction.
 
-1. Authenticates using browser cookies
-2. Navigates the TailwindPlus site structure, extracting component HTML by clicking "View Code" buttons
-4. Organizes everything into a nested JSON structure matching the site
-5. Compares versions using diffs to spot Tailwind HTML and CSS changes
+1. Discovers the complete TailwindPlus component hierarchy from the discovery page
+2. Creates a parallel worker pool to process multiple component pages simultaneously
+3. Each worker authenticates using stored credentials and navigates to component pages
+4. Workers extract component data by configuring framework/version selectors and waiting for API responses
+5. All component data is organized into a hierarchical JSON structure matching the site organization
+6. Failed downloads are automatically retried with exponential backoff
 
 
 ## Code Quality
