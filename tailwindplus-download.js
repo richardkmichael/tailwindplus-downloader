@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import packageJson from './package.json' with { type: 'json' };
 
 // ===================================================================================
 //
@@ -795,7 +796,7 @@ For more options, run: node tailwindplus-download.js --help`);
       downloaded_at: this.startTime.toISOString(),
       component_count: componentCount,
       download_duration: `${durationSec}s`,
-      downloader_version: '2.0.0',
+      downloader_version: packageJson.version,
       tailwindplus: hierarchicalData
     };
 
@@ -820,7 +821,7 @@ For more options, run: node tailwindplus-download.js --help`);
 
 function parseArgs() {
   const argv = yargs(hideBin(process.argv))
-    .version(false)
+    .version('version', 'Show version number', packageJson.version)
     .strict()
     .option('output', {
       type: 'string',
