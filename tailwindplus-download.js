@@ -155,9 +155,9 @@ class Worker {
         return null;
       }
 
-      const isDesiredPair = components => components.every(c => (c.snippet.name == framework) && (c.snippet.version == version));
+      const areDesiredFrameworkAndVersion = components => components.every(c => (c.snippet.name == framework) && (c.snippet.version == version));
 
-      if (isDesiredPair(pageComponents)) {
+      if (areDesiredFrameworkAndVersion(pageComponents)) {
         this.logger.log(`   Page data exists for { ${framework}, v${version} }`);
 
         // Transform to component objects with snippets arrays
@@ -277,7 +277,7 @@ class Worker {
     this.logger.log(`   Configuring page for: { ${framework}, v${version} }`);
 
     // Set up response promise to wait for data after selector changes
-    const isDesiredPair = components => components.every(c => (c.snippet.name == framework) && (c.snippet.version == version));
+    const areDesiredFrameworkAndVersion = components => components.every(c => (c.snippet.name == framework) && (c.snippet.version == version));
 
     const dataResponsePromise = this.page.waitForResponse(async (response) => {
       if (response.request().method() !== 'GET' || !response.url().includes(pageUrlPart)) {
@@ -287,7 +287,7 @@ class Worker {
         const data = await response.json();
         const components = data?.props?.subcategory?.components;
         if (!components || components.length === 0) return false;
-        return isDesiredPair(components);
+        return areDesiredFrameworkAndVersion(components);
       } catch (e) {
         return false;
       }
