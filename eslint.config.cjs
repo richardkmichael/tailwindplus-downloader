@@ -16,7 +16,7 @@ module.exports = [
   // Base configuration for all files
   {
     languageOptions: {
-      ecmaVersion: 2022,
+      ecmaVersion: 2025,
       sourceType: "module",
       globals: {
         ...globals.node,
