@@ -4,10 +4,31 @@ A downloader for TailwindPlus components in HTML, React, and Vue formats across 
 v4, with diff tools to compare components between downloads.
 
 TailwindPlus component HTML is downloaded into a structured JSON file, preserving the component
-organization.  The JSON output allows the use of `jq` for programmatic access.  For example, using
-an LLM coding assistant such as Claude Code; see below for details.
+organization.
+
+The JSON output allows the use of `jq` for programmatic access.  For example, using
+an LLM coding assistant such as Claude Code or an MCP server, see below for details.
 
 The diff tools are helpful because TailwindPlus undergoes small fixes for which there is no changelog.
+
+## Usage
+
+See below for additional usage.
+
+1. Create credentials file:
+   ```bash
+   echo '{"email": "your-email@example.com", "password": "your-password"}' > credentials.json
+   ```
+
+2. Download components, will take around 5 minutes running with 5 parallel workers:
+   ```bash
+   npx github:richardkmichael/tailwindplus-downloader#latest
+   ```
+
+3. Downloaded components file:
+   ```bash
+   ls -l tailwindplus-components-*.json
+   ```
 
 ## Features
 
@@ -26,7 +47,7 @@ context and often unnecessary.
 
 The skeleton file provides the LLM with the structure of the JSON file, allowing it to:
 
-  * use `jq` to query the full file for a _specific_ component's HTML
+  * use `jq` to query the full JSON file for the code for a _specific_ component
   * _search_ component _names_ to make component suggestions
 
 Generate the skeleton file with `jq`:
@@ -55,73 +76,56 @@ in conjunction with the skeleton file.  An MCP `jq` tool call will be similar to
 
 `jq '.tailwindplus.Marketing."Page Sections"."Hero Sections"."Simple centered".snippets[] | select(.name == "html" and .version == 4) | .code' --raw-output path/to/tailwindplus-components.json`
 
-## Setup
-
-1. Install dependencies:
-   ```bash
-   npm install
-   ```
-
-2. Create credentials file:
-   ```bash
-   echo '{"email": "your-email@example.com", "password": "your-password"}' > credentials.json
-   ```
-
-3. Download components:
-   ```bash
-   node tailwindplus-download.js
-   ```
-
-## Usage
-
-### Download Script
+## Additional usage
 
 ```bash
 # Basic download
-node tailwindplus-download.js
+npx github:richardkmichael/tailwindplus-downloader#latest
 
 # Custom output location
-node tailwindplus-download.js --output ./my-components.json
+npx github:richardkmichael/tailwindplus-downloader#latest --output ./my-components.json
 
 # Custom credentials file
-node tailwindplus-download.js --credentials ./my-credentials.json
+npx github:richardkmichael/tailwindplus-downloader#latest --credentials ./my-credentials.json
 
-# Adjust number of parallel workers
-node tailwindplus-download.js --workers 3
+# Help, there are additional debug options
+npx github:richardkmichael/tailwindplus-downloader#latest --help
+
+# Adjust number of parallel workers, default 5
+npx github:richardkmichael/tailwindplus-downloader#latest --workers 3
 
 # Debug mode (show browser window)
-node tailwindplus-download.js --debug-headed
+npx github:richardkmichael/tailwindplus-downloader#latest --debug-headed
 
 # Enable detailed logging
-node tailwindplus-download.js --debug-log
+npx github:richardkmichael/tailwindplus-downloader#latest --debug-log
 
 # Short test (only first 2 sections)
-node tailwindplus-download.js --debug-short-test
+npx github:richardkmichael/tailwindplus-downloader#latest --debug-short-test
 
 # Slow down browser actions (useful for debugging)
-node tailwindplus-download.js --slow-mo 1000
-
-# Help
-node tailwindplus-download.js --help
+npx github:richardkmichael/tailwindplus-downloader#latest --slow-mo 1000
 ```
 
 ### Diff Script
 
+The diff script has a variety of options to compare between different versions, or a framework only;
+see help.
+
 ```bash
-# Compare two most recent downloads automatically
-./tailwindplus-diff.sh
+# Compare two most recent downloads automatically, assumes default downloader JSON filename.
+./tailwindplus-diff.js
 
 # Compare specific files
-./tailwindplus-diff.sh --old old-file.json --new new-file.json
+./tailwindplus-diff.js --old-file old-file.json --new-file new-file.json
 
 # Help
-./tailwindplus-diff.sh --help
+./tailwindplus-diff.js --help
 ```
 
 ## Dependencies
 
 - **Node.js and npm** - For running the download script
-- **jq** - Required for JSON processing in diff script
 - **git** - Optional, provides better diffs (recommended)
 
 ## Data Structure
@@ -187,7 +191,7 @@ The script uses Playwright automation with a parallel worker pool architecture t
 3. Each worker authenticates using stored credentials and navigates to component pages
 4. Workers extract component data by configuring framework/version selectors and waiting for API responses
 5. All component data is organized into a hierarchical JSON structure matching the site organization
-6. Failed downloads are automatically retried with exponential backoff
+6. Failed downloads are automatically retried
 
 
 ## Code Quality
