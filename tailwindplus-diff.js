@@ -37,7 +37,7 @@ function parseArgs() {
       type: 'string',
       choices: ['3', '4'],
       requiresArg: true,
-      describe: 'Compare only this version <3|4> between old and new files (default: all versions)'
+      describe: 'Compare only this version <3|4> between old and new files (default: all)'
     })
     .option('tw-from', {
       type: 'string',
@@ -61,6 +61,10 @@ function parseArgs() {
       type: 'boolean',
       describe: 'Show detailed output including "No changes" messages'
     })
+    .option('names-only', {
+      type: 'boolean',
+      describe: 'Only show component names that differ between files (no content comparison)'
+    })
     .check((argv) => {
       // Check for mutually exclusive version options
       const hasVersion = argv['tw'] !== undefined;
@@ -83,7 +87,7 @@ function parseArgs() {
     .example('$0 --old-file=old.json --new-file=new.json --tw=4', 'Compare specific files')
     .help('help')
     .alias('help', 'h')
-    .wrap(null)
+    .wrap(yargs().terminalWidth())
     .parseSync();
 
   // Convert kebab-case to camelCase for internal use
@@ -94,7 +98,8 @@ function parseArgs() {
     fromVersion: argv['tw-from'],
     toVersion: argv['tw-to'],
     framework: argv['framework'],
-    verbose: argv['verbose']
+    verbose: argv['verbose'],
+    namesOnly: argv['names-only']
   };
 }
 
@@ -244,18 +249,108 @@ function generateDiff(oldContent, newContent, outputFile, framework, safeName) {
 }
 
 /**
- * Find snippet code by version and framework from component's snippets array
+ * Find snippet code by version, framework, and mode from component's snippets array
  */
-function findSnippetCode(component, version, framework) {
+function findSnippetCode(component, version, framework, mode = null) {
   if (!component || !component.snippets || !Array.isArray(component.snippets)) {
     return null;
   }
 
   const snippet = component.snippets.find(s =>
-    s.version === version && s.name === framework
+    s.version === version && s.name === framework && s.mode === mode
   );
 
   return snippet ? snippet.code : null;
+}
+
+/**
+ * Extract all component paths from the nested structure
+ */
+function getComponentPaths(components) {
+  const paths = [];
+
+  for (const [category, categoryData] of Object.entries(components)) {
+    for (const [subcategory, subcategoryData] of Object.entries(categoryData)) {
+      for (const [group, groupData] of Object.entries(subcategoryData)) {
+        for (const [component, componentData] of Object.entries(groupData)) {
+          // Only include objects that have a snippets property
+          if (componentData && typeof componentData === 'object' && componentData.snippets) {
+            paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
+          }
+        }
+      }
+    }
+  }
+
+  return paths.sort();
+}
+
+/**
+ * Compare component names between old and new files
+ */
+function compareComponentNames(oldComponents, newComponents, options) {
+  const oldPaths = getComponentPaths(oldComponents);
+  const newPaths = getComponentPaths(newComponents);
+
+  const oldSet = new Set(oldPaths);
+  const newSet = new Set(newPaths);
+
+  const onlyInOld = oldPaths.filter(path => !newSet.has(path));
+  const onlyInNew = newPaths.filter(path => !oldSet.has(path));
+
+  console.log(`Comparing component names:`);
+  console.log(`  Old: ${options.oldFile} (${oldPaths.length} components)`);
+  console.log(`  New: ${options.newFile} (${newPaths.length} components)`);
+  console.log('');
+
+  if (onlyInOld.length > 0) {
+    console.log('Only in old file:');
+    onlyInOld.forEach(path => console.log(path));
+    console.log('');
+  }
+
+  if (onlyInNew.length > 0) {
+    console.log('Only in new file:');
+    onlyInNew.forEach(path => console.log(path));
+    console.log('');
+  }
+
+  if (onlyInOld.length === 0 && onlyInNew.length === 0) {
+    console.log('Component names are identical between files.');
+  } else {
+    console.log(`Summary: ${onlyInOld.length} only in old, ${onlyInNew.length} only in new`);
+  }
+}
+
+/**
+ * Collect all unique modes from components
+ */
+function collectModes(components) {
+  const allModes = new Set();
+
+  function scanComponents(components) {
+    for (const category of Object.values(components)) {
+      for (const subcategory of Object.values(category)) {
+        for (const group of Object.values(subcategory)) {
+          for (const component of Object.values(group)) {
+            if (component && component.snippets && Array.isArray(component.snippets)) {
+              component.snippets.forEach(snippet => {
+                allModes.add(snippet.mode);
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  scanComponents(components);
+  return Array.from(allModes).sort((a, b) => {
+    // Sort with null first, then alphabetically
+    if (a === null) return -1;
+    if (b === null) return 1;
+    return String(a).localeCompare(String(b));
+  });
 }
 
 /**
@@ -316,58 +411,83 @@ function getComparisons(options, oldComponents, newComponents) {
 }
 
 /**
- * Compare a single component across versions and frameworks
+ * Compare a single snippet combination (version, framework, mode)
  */
-async function compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader) {
-  let diffs = 0;
-  let hasDifferences = false;
-  let headerPrinted = false;
+async function compareSnippetCombination(oldComponent, newComponent, comparison, framework, mode, componentPath, options, state) {
+  const oldContent = findSnippetCode(oldComponent, comparison.oldVersion, framework, mode);
+  const newContent = findSnippetCode(newComponent, comparison.newVersion, framework, mode);
+
+  // Skip if neither component has this combination
+  if (!oldContent && !newContent) {
+    return state;
+  }
+
+  const modeStr = mode === null ? '' : `.${mode}`;
+
+  if (!oldContent || !newContent) {
+    state.headerPrinted = ensureHeaderPrinted(state.componentHeader, state.headerPrinted);
+    if (!oldContent) {
+      console.log(`        Missing ${comparison.label}.${framework}${modeStr} in ${options.oldFile}`);
+    } else {
+      console.log(`        Missing ${comparison.label}.${framework}${modeStr} in ${options.newFile}`);
+    }
+    state.hasDifferences = true;
+    return state;
+  }
+
+  if (oldContent !== newContent) {
+    state.headerPrinted = ensureHeaderPrinted(state.componentHeader, state.headerPrinted);
+    const modeStrFile = mode === null ? '' : `_${mode}`;
+    const safeName = `${componentPath}_${comparison.label}_${framework}${modeStrFile}`
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .replace(/__+/g, '_');
+    const diffFileName = `${safeName}.diff`;
+
+    const diffPath = path.join(DIFF_DIR, diffFileName);
+    await generateDiff(oldContent, newContent, diffPath, framework, safeName);
+    state.diffs++;
+    state.hasDifferences = true;
+  } else if (options.verbose) {
+    state.headerPrinted = ensureHeaderPrinted(state.componentHeader, state.headerPrinted);
+    console.log(`        No changes in ${comparison.label}.${framework}${modeStr}`);
+  }
+
+  return state;
+}
+
+/**
+ * Ensure component header is printed once
+ */
+function ensureHeaderPrinted(componentHeader, headerPrinted) {
+  if (!headerPrinted) {
+    console.log(componentHeader);
+    return true;
+  }
+  return headerPrinted;
+}
+
+/**
+ * Compare a single component across versions, frameworks, and modes
+ */
+async function compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader, availableModes) {
+  let state = {
+    diffs: 0,
+    hasDifferences: false,
+    headerPrinted: false,
+    componentHeader: componentHeader
+  };
+
   const frameworks = options.framework ? [options.framework] : ['html', 'react', 'vue'];
 
   for (const comparison of comparisons) {
     for (const framework of frameworks) {
-      const oldContent = findSnippetCode(oldComponent, comparison.oldVersion, framework);
-      const newContent = findSnippetCode(newComponent, comparison.newVersion, framework);
-
-      if (!oldContent || !newContent) {
-        if (!headerPrinted) {
-          console.log(componentHeader);
-          headerPrinted = true;
-        }
-        if (!oldContent) {
-          console.log(`        Missing ${comparison.label}.${framework} in ${options.oldFile}`);
-        } else {
-          console.log(`        Missing ${comparison.label}.${framework} in ${options.newFile}`);
-        }
-        hasDifferences = true;
-        continue;
-      }
-
-      if (oldContent !== newContent) {
-        if (!headerPrinted) {
-          console.log(componentHeader);
-          headerPrinted = true;
-        }
-        const safeName = `${componentPath}_${comparison.label}_${framework}`
-          .replace(/[^a-zA-Z0-9._-]/g, '_')
-          .replace(/__+/g, '_');
-        const diffFileName = `${safeName}.diff`;
-
-        const diffPath = path.join(DIFF_DIR, diffFileName);
-        await generateDiff(oldContent, newContent, diffPath, framework, safeName);
-        diffs++;
-        hasDifferences = true;
-      } else if (options.verbose) {
-        if (!headerPrinted) {
-          console.log(componentHeader);
-          headerPrinted = true;
-        }
-        console.log(`        No changes in ${comparison.label}.${framework}`);
+      for (const mode of availableModes) {
+        state = await compareSnippetCombination(oldComponent, newComponent, comparison, framework, mode, componentPath, options, state);
       }
     }
   }
 
-  return { diffs, hasDifferences };
+  return { diffs: state.diffs, hasDifferences: state.hasDifferences };
 }
 
 /**
@@ -379,6 +499,17 @@ async function compareComponents(oldComponents, newComponents, options) {
   let totalDiffs = 0;
   let differencesFound = false;
   const comparisons = getComparisons(options, oldComponents, newComponents);
+
+  // Collect all available modes from both old and new components
+  const oldModes = collectModes(oldComponents);
+  const newModes = collectModes(newComponents);
+  const allModes = [...new Set([...oldModes, ...newModes])].sort((a, b) => {
+    if (a === null) return -1;
+    if (b === null) return 1;
+    return String(a).localeCompare(String(b));
+  });
+
+  console.log(`Available modes: ${allModes.map(m => m === null ? 'null' : m).join(', ')}\n`);
 
   // Iterate through categories
   for (const category of Object.keys(newComponents)) {
@@ -403,7 +534,7 @@ async function compareComponents(oldComponents, newComponents, options) {
           }
 
           const componentPath = `${category}_${subcategory}_${group}_${component}`;
-          const result = await compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader);
+          const result = await compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader, allModes);
 
           if (result.hasDifferences) {
             differencesFound = true;
@@ -426,35 +557,17 @@ async function compareComponents(oldComponents, newComponents, options) {
  * Main execution
  */
 async function main() {
-  // Handle help early before any processing, or when no args provided
-  if (process.argv.includes('--help') || process.argv.includes('-h') || process.argv.length <= 2) {
-    const helpYargs = yargs()
-      .version(false)
-      .option('old-file', { type: 'string', requiresArg: true, describe: 'Old component file <file> (auto-detected if not specified)' })
-      .option('new-file', { type: 'string', requiresArg: true, describe: 'New component file <file> (auto-detected if not specified)' })
-      .option('tw', { type: 'string', choices: ['3', '4'], requiresArg: true, describe: 'Compare only this version <3|4> between old and new files (default: all versions)' })
-      .option('tw-from', { type: 'string', choices: ['3', '4'], requiresArg: true, describe: 'Source version <3|4> (requires --tw-to)' })
-      .option('tw-to', { type: 'string', choices: ['3', '4'], requiresArg: true, describe: 'Target version <3|4> (requires --tw-from)' })
-      .option('framework', { type: 'string', choices: ['html', 'react', 'vue'], requiresArg: true, describe: 'Only diff this framework <html|react|vue> (default: all)' })
-      .option('verbose', { type: 'boolean', describe: 'Show detailed output including "No changes" messages' })
-      .usage('Usage: $0 [options]')
-      .example('$0 --tw=4', 'Compare v4 components between two most recent downloads')
-      .example('$0 --tw-from=3 --tw-to=4', 'Compare v3 to v4 for upgrade planning')
-      .example('$0 --old-file=old.json --new-file=new.json --tw=4', 'Compare specific files')
-      .example('$0 --tw=4 --framework=react', 'Compare only React components')
-      .example('$0 --verbose', 'Show detailed output including "No changes" messages')
-      .help('help')
-      .alias('help', 'h');
-
-    helpYargs.showHelp();
-    return;
-  }
-
   try {
     const options = parseArgs();
     discoverFiles(options);
 
     const { oldData, newData, oldComponents, newComponents } = loadFiles(options);
+
+    if (options.namesOnly) {
+      // Names-only mode: compare component names without content comparison
+      compareComponentNames(oldComponents, newComponents, options);
+      return;
+    }
 
     console.log(`Comparing:`);
     console.log(`  Old: ${options.oldFile}`);
