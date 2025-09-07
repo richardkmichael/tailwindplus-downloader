@@ -12,7 +12,10 @@
   "author": "Richard Michael",
   "license": "MIT",
   "bin": {
-    "tailwindplus-download": "tailwindplus-download.js"
+    "tailwindplus-downloader": "tailwindplus-downloader.js",
+    "tailwindplus-diff": "tailwindplus-diff.js",
+    "twp-downloader": "tailwindplus-downloader.js",
+    "twp-diff": "tailwindplus-diff.js"
   },
   "dependencies": {
     "playwright": "^1.52.0",

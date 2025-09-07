@@ -88,6 +88,10 @@ in conjunction with the skeleton file.  An MCP `jq` tool call will be similar to
 
 ## Additional usage
 
+Within the repo, or with a global npm install, the commands below are available as:
+  - `npx twp-downloader [...]`
+  - `npx twp-diff [...]`
+
 ```bash
 # Basic download
 npx github:richardkmichael/tailwindplus-downloader#latest
@@ -127,16 +131,16 @@ see help.
 
 ```bash
 # Compare two most recent downloads automatically, assumes default downloader JSON filename.
-./tailwindplus-diff.js
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff
 
 # Compare specific files
-./tailwindplus-diff.js --old-file old-file.json --new-file new-file.json
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff --old-file old-file.json --new-file new-file.json
 
 # Show only component names that differ (no content comparison)
-./tailwindplus-diff.js --names-only
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff --names-only
 
 # Help
-./tailwindplus-diff.js --help
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff --help
 ```
 
 ## Dependencies
