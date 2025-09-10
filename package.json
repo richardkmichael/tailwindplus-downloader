@@ -1,6 +1,6 @@
 {
   "name": "tailwindplus-downloader",
-  "version": "2.0.0",
+  "version": "3.0.0-rc1",
   "main": "tailwindplus-download.js",
   "type": "module",
   "description": "A downloader for TailwindPlus components with diff comparison tools",
@@ -12,10 +12,14 @@
   "author": "Richard Michael",
   "license": "MIT",
   "bin": {
-    "tailwindplus-download": "tailwindplus-download.js"
+    "tailwindplus-downloader": "tailwindplus-downloader.js",
+    "tailwindplus-diff": "tailwindplus-diff.js",
+    "twp-downloader": "tailwindplus-downloader.js",
+    "twp-diff": "tailwindplus-diff.js"
   },
   "dependencies": {
     "playwright": "^1.52.0",
+    "read": "^4.1.0",
     "yargs": "^18.0.0"
   },
   "devDependencies": {

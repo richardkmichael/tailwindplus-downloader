@@ -5,3 +5,5 @@ tailwindplus-skeleton.json
 diffs/
 
 credentials.json
+.tailwindplus-downloader-credentials.json
+.tailwindplus-downloader-session.json
