@@ -1,6 +1,6 @@
 {
   "name": "tailwindplus-downloader",
-  "version": "3.0.0-rc1",
+  "version": "3.0.0",
   "main": "tailwindplus-download.js",
   "type": "module",
   "description": "A downloader for TailwindPlus components with diff comparison tools",
