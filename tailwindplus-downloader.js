@@ -1545,6 +1545,9 @@ function parseArgs() {
       return true;
     })
     .usage('Usage: $0 [options]')
+    .example('$0 --output=components.json', 'Download to specific file')
+    .example('$0 --workers=5 --debug', 'Slower download with debug logging')
+    .epilog('Options can be specified as --option=value or --option value')
     .help('help')
     .alias('help', 'h')
     .parseSync();
