@@ -1208,6 +1208,8 @@ class TailwindPlusDownloader {
     };
 
     this.logger.debug(`Writing output file: ${outputFile}`);
+    // Unfortunately, using a replacer prevents V8's 2x fast-path serialization.
+    // See: `Limitations`, https://v8.dev/blog/json-stringify
     fs.writeFileSync(outputFile, JSON.stringify(outputData, sortedObjects, 2));
   }
 
