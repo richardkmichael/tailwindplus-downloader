@@ -368,14 +368,22 @@ class TailwindPlusDownloader {
       this.urlCount = discovery.urlCount;
       this.componentCount = discovery.componentCount;
 
-      const initialFormat = await this._detectFormat();
-      const formats = this._generateFormats(initialFormat);
+      let formats;
+      if (this.options.unauthenticated) {
+        // In unauthenticated mode, use default format order (no detection needed)
+        formats = this._generateFormats();
+      } else {
+        const initialFormat = await this._detectFormat();
+        formats = this._generateFormats(initialFormat);
+      }
 
       this._showStartMessage();
       await this._processFormats(formats);
 
-      // Clean up eCommerce components, which downloaded "extra" duplicate copies due to no `mode`
-      this.componentData.Ecommerce = this._processEcommerceComponents(this.componentData.Ecommerce);
+      // Clean up eCommerce components (skip in unauthenticated mode - no eCommerce components)
+      if (!this.options.unauthenticated && this.componentData.Ecommerce) {
+        this.componentData.Ecommerce = this._processEcommerceComponents(this.componentData.Ecommerce);
+      }
 
       this._processResultsAndWriteOutput();
     } catch (error) {
@@ -421,9 +429,9 @@ class TailwindPlusDownloader {
 
     this.browser = await chromium.launch(playwrightConfiguration);
 
-    // Load saved session if it exists
+    // Load saved session if it exists (skip for unauthenticated mode)
     this.contextOptions = {};
-    if (fs.existsSync(this.session)) {
+    if (!this.options.unauthenticated && fs.existsSync(this.session)) {
       this.contextOptions.storageState = this.session;
       this.logger.debug('Loading saved session');
     }
@@ -437,6 +445,12 @@ class TailwindPlusDownloader {
     }
 
     this.mainPage = await this.context.newPage();
+
+    // Skip authentication for unauthenticated mode
+    if (this.options.unauthenticated) {
+      this.logger.debug('Unauthenticated mode - skipping login');
+      return;
+    }
 
     // Validate session and authenticate if needed
     const isAuthenticated = await this._validateSession();
@@ -876,6 +890,10 @@ class TailwindPlusDownloader {
   }
 
   _showStartMessage() {
+    if (this.options.unauthenticated) {
+      this.logger.info('Unauthenticated mode: downloading free components only');
+    }
+
     if (this.options.debugTrace) {
       this.logger.info(`Tracing enabled. Traces will be saved to: ${this.tracesDir}`);
     }
@@ -899,6 +917,9 @@ class TailwindPlusDownloader {
    * persisted server-side user account-level setting, and so all URLs must be downloaded in the
    * current format before the format may be changed.
    *
+   * In unauthenticated mode, workers handle all formats per-page in a single visit, since format
+   * controls work per-component without authentication.
+   *
    * @param {string[]} formats - Array of format identifiers to process
    * @throws {DownloaderError} When worker creation fails or format processing fails
    */
@@ -914,6 +935,21 @@ class TailwindPlusDownloader {
       workers.push(worker);
     }
 
+    // In unauthenticated mode, workers handle all formats per-page
+    if (this.options.unauthenticated) {
+      this.logger.info(`Unauthenticated mode: downloading ${formats.length} formats per page`);
+      this.formats = formats;  // Workers will use this
+      this._populateJobQueue();
+
+      const workerPromises = workers.map(worker => worker.start());
+      await Promise.all(workerPromises);
+      await Promise.all(workers.map(worker => worker.stop()));
+
+      this.logger.debug('All formats downloaded');
+      return;
+    }
+
+    // Authenticated mode: iterate through formats, setting account-level format
     for (const format of formats) {
       this.logger.info(`Starting download for format: ${format}`);
 
@@ -1306,8 +1342,10 @@ class Worker {
 
     // Start tracing if enabled
     if (this.downloader.options.debugTrace) {
-      const currentFormat = this.downloader.currentFormat;
-      await startTracing(this.context, `worker-${this.id}-${currentFormat}`, `Worker ${this.id} (${currentFormat})`);
+      const traceLabel = this.downloader.options.unauthenticated
+        ? 'unauthenticated'
+        : this.downloader.currentFormat;
+      await startTracing(this.context, `worker-${this.id}-${traceLabel}`, `Worker ${this.id} (${traceLabel})`);
     }
 
     this.page = await this.context.newPage();
@@ -1320,7 +1358,12 @@ class Worker {
       try {
         this.logger.debug(`Started job: ${job.url}`);
         job.status = 'processing';
-        const pageData = await this.extractPageData(job);
+
+        // Use unauthenticated extraction when in that mode
+        const pageData = this.downloader.options.unauthenticated
+          ? await this._extractUnauthenticatedPageData(job)
+          : await this.extractPageData(job);
+
         job.data = pageData;
         job.status = 'completed';
         this.downloader._processJobResult(job);
@@ -1453,14 +1496,183 @@ class Worker {
   }
 
   /**
+   * Extracts component data for unauthenticated (free) components by changing format controls
+   * per-component and capturing snippets from JSON responses.
+   *
+   * Uses data-page JSON to identify downloadable components by UUID, then iterates through all
+   * format combinations (framework/version/mode) for each component. Captures snippets either
+   * from JSON responses when controls are changed, or from initial data-page when format already
+   * matches.
+   *
+   * @param {Object} job - Job object containing URL
+   * @returns {Promise<Object>} Component data organized by hierarchy with all format snippets
+   * @throws {DownloaderError} When page navigation fails or data extraction fails
+   */
+  async _extractUnauthenticatedPageData(job) {
+    const url = job.url;
+    const formats = this.downloader.formats;
+
+    // Relative selectors within a component section
+    const controlsRelative = 'div > :nth-child(2)';
+    const codeButtonRelative = `${controlsRelative} button:has-text("Code")`;
+    const frameworkSelectRelative = `${controlsRelative} select`;
+    const modeInputRelative = (mode) => `${controlsRelative} input[value="${mode}"]`;
+
+    // Predicate for JSON response to the page URL
+    const isInertiaJsonResponse = response =>
+      response.url() === url &&
+      response.status() === 200 &&
+      (response.headers()['content-type'] || '').includes('application/json');
+
+    await this.page.goto(url, { waitUntil: 'domcontentloaded' });
+
+    // Wait for data-page to be available
+    await this.page.waitForFunction(() => {
+      const app = document.querySelector('#app');
+      return app && app.getAttribute('data-page');
+    });
+
+    // Get page structure and downloadable components from data-page JSON
+    const pageInfo = await this.page.evaluate(() => {
+      const data = JSON.parse(document.querySelector('#app').getAttribute('data-page'));
+      const subcategory = data.props.subcategory;
+      return {
+        product: subcategory.category.product.name,
+        category: subcategory.category.name,
+        subcategory: subcategory.name,
+        downloadableComponents: data.props.subcategory.components
+          .filter(c => c.downloadable && c.preview === 'light')
+          .map(c => ({ uuid: c.uuid, name: c.name, initialSnippet: c.snippet }))
+      };
+    });
+
+    const { product, category, subcategory, downloadableComponents } = pageInfo;
+
+    if (downloadableComponents.length === 0) {
+      this.logger.debug(`No downloadable components on ${url}`);
+      return {};
+    }
+
+    this.logger.debug(`Found ${downloadableComponents.length} downloadable components`);
+
+    // Build component data structure
+    const componentData = {};
+    componentData[product] = {};
+    componentData[product][category] = {};
+    componentData[product][category][subcategory] = {};
+
+    // Process each downloadable component by UUID
+    for (const comp of downloadableComponents) {
+      const snippets = [];
+
+      // Locate section by UUID
+      const section = this.page.locator(`#component-${comp.uuid}`);
+      await section.waitFor({ state: 'visible', timeout: CONFIG.timeout });
+
+      // Click Code button to reveal controls
+      const codeButton = section.locator(codeButtonRelative);
+      await codeButton.click();
+
+      // Get framework select (first select in controls)
+      const frameworkSelect = section.locator(frameworkSelectRelative).first();
+
+      // Check if mode inputs exist (eCommerce pages don't have them)
+      const modeInputCount = await section.locator(`${controlsRelative} input[type="radio"]`).count();
+      const hasModeInputs = modeInputCount > 0;
+
+      // For pages without mode inputs, filter to unique framework/version combinations
+      let formatsToUse = formats;
+      if (!hasModeInputs) {
+        const seen = new Set();
+        formatsToUse = formats.filter(f => {
+          const key = `${f.framework}-${f.version}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      // Iterate through format combinations
+      for (const format of formatsToUse) {
+        let responseBody = null;
+
+        // Change framework if needed
+        const currentFramework = await frameworkSelect.inputValue();
+        if (currentFramework !== format.framework) {
+          const resp = this.page.waitForResponse(isInertiaJsonResponse);
+          await frameworkSelect.selectOption(format.framework);
+          responseBody = await (await resp).json();
+        }
+
+        // Change version if needed
+        const versionSelect = section.locator(frameworkSelectRelative).nth(1);
+        const actualVersion = await versionSelect.inputValue();
+        const targetVersion = String(format.version);
+        if (actualVersion !== targetVersion) {
+          const resp = this.page.waitForResponse(isInertiaJsonResponse);
+          await versionSelect.selectOption(targetVersion);
+          responseBody = await (await resp).json();
+        }
+
+        // Change mode if needed (only for pages with mode inputs)
+        if (hasModeInputs) {
+          const modeInput = section.locator(modeInputRelative(format.mode)).first();
+          const isChecked = await modeInput.isChecked();
+
+          if (!isChecked) {
+            const resp = this.page.waitForResponse(isInertiaJsonResponse);
+            await modeInput.click();
+            responseBody = await (await resp).json();
+          }
+        }
+
+        // Extract snippet - either from response or initial data-page
+        let snippet;
+        if (responseBody) {
+          const components = responseBody.props.subcategory.components;
+          const targetInResponse = components.find(c => c.uuid === comp.uuid);
+          snippet = targetInResponse?.snippet;
+        } else {
+          // No changes made - use initial snippet from data-page
+          snippet = comp.initialSnippet;
+        }
+
+        if (snippet) {
+          snippets.push({
+            code: snippet.code,
+            name: snippet.name,
+            language: snippet.language,
+            version: snippet.version,
+            mode: snippet.mode,
+            supportsDarkMode: snippet.supportsDarkMode,
+            preview: snippet.preview
+          });
+        }
+      }
+
+      componentData[product][category][subcategory][comp.name] = {
+        name: comp.name,
+        snippets: snippets
+      };
+
+      this.logger.debug(`Collected ${snippets.length} snippets for ${comp.name}`);
+    }
+
+    this.logger.debug(`Extracted ${downloadableComponents.length} components from ${product}/${category}/${subcategory}`);
+    return componentData;
+  }
+
+  /**
    * Stops the worker and performs cleanup
    * Stops tracing if enabled, closes browser context and pages, and resets state
    */
   async stop() {
     // Stop tracing if enabled
     if (this.downloader.options.debugTrace) {
-      const currentFormat = this.downloader.currentFormat;
-      await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-${currentFormat}`);
+      const traceLabel = this.downloader.options.unauthenticated
+        ? 'unauthenticated'
+        : this.downloader.currentFormat;
+      await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-${traceLabel}`);
     }
 
     if (this.page) {
@@ -1531,6 +1743,11 @@ function parseArgs() {
       type: 'boolean',
       describe: 'Enable tracing to debug browser interactions, saved in directory `[OUTPUT].traces`'
     })
+    .option('unauthenticated', {
+      type: 'boolean',
+      default: false,
+      describe: 'Download only free (unauthenticated) components without login'
+    })
     .check((argv) => {
       // Validate workers bounds
       if (argv.workers <= 0) {
@@ -1563,7 +1780,8 @@ function parseArgs() {
     debugShortTest: argv.debugShortTest,
     debugUrlFile: argv.debugUrlFile,
     debugHeaded: argv.debugHeaded,
-    debugTrace: argv.debugTrace
+    debugTrace: argv.debugTrace,
+    unauthenticated: argv.unauthenticated
   };
 }
 
