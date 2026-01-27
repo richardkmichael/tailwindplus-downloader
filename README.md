@@ -1,16 +1,19 @@
 # TailwindPlus Downloader
 
+> [!NOTE]
+> A TailwindPlus license is needed to get the most out of this downloader.
+
 A downloader for TailwindPlus components in HTML, React, and Vue formats across Tailwind CSS v3 and
 v4 in system, light, and dark modes; and a diff tool to compare components between downloads.
 
-TailwindPlus component code is downloaded into a structured JSON file, preserving the component
+TailwindPlus components are downloaded into a structured JSON file, preserving the component
 organization.
 
-The JSON output allows the use of `jq` for programmatic access.  For example, using an LLM coding
-assistant such as Claude Code or the [TailwindPlus MCP
-server](https://github.com/richardkmichael/mcp-tailwindplus). See below for more.
+The JSON file can be used with the [TailwindPlus MCP
+server](https://github.com/richardkmichael/mcp-tailwindplus), or directly with `jq`. See below for
+more.
 
-The diff tool is helpful because TailwindPlus undergoes small fixes for which there is no changelog.
+The diff tool is helpful because TailwindPlus undergoes small fixes, for which there is no changelog.
 
 ## Quick start
 
@@ -28,7 +31,7 @@ See below for additional usage and authentication details.
    ls -l tailwindplus-components-*.json
    ```
 
-## Authentication
+## Credentials
 
 Eventually the saved session will expire, and you will be prompted for credentials again.
 You may optionally save credentials as a JSON file and it will automatically be used when needed,
@@ -44,12 +47,56 @@ echo '{"email": "your-email@example.com", "password": "your-password"}' > .tailw
 
 - Downloads all UI components in HTML, React, and Vue frameworks for both Tailwind CSS v3 and v4 in
   system, light, and dark modes into a JSON file, preserving the hierarchical organization
-    - Note: eCommerce components do not have mode variations
+    - Note: eCommerce components do not have modes
 - Defaults to a 15 worker pool with retries for fast, reliable downloads, adjust with `--workers N`
 - Timestamped output files allow comparing component versions between downloads
 - Handles authentication via stored credentials or interactive prompts with session persistence
 
-### Using TailwindPlus with an agent
+## Using TailwindPlus with an agent
+
+### MCP Server
+
+> [!TIP]
+> Use the [TailwindPlus MCP server](https://github.com/richardkmichael/mcp-tailwindplus).  It uses the JSON file from the downloader.
+
+Then ask for a component:
+
+```
+> I need a simple one-line search input to put in the app header.
+
+ mcp-tailwindplus - Get Component by Full Name (MCP)(full_name: "Application UI.Forms.Input Groups.Input with leading icon", framework: "react", tailwind_version: "4")
+  ⎿  {
+       "version": "2025-07-14-204017",
+       "full_name": "Application UI.Forms.Input Groups.Input with leading icon",
+     … +15 lines (ctrl+r to expand)
+
+ mcp-tailwindplus - Get Component by Full Name (MCP)(full_name: "Application UI.Forms.Input Groups.Input with keyboard shortcut", framework: "react", tailwind_version: "4")
+  ⎿  {
+       "version": "2025-07-14-204017",
+       "full_name": "Application UI.Forms.Input Groups.Input with keyboard shortcut",
+     … +16 lines (ctrl+r to expand)
+
+
+ Perfect! Here are two ideal options for a header search input:
+
+  1. Input with Leading Icon
+
+  Application UI.Forms.Input Groups.Input with leading icon
+  - Simple search input with magnifying glass icon
+  - Just swap the EnvelopeIcon for MagnifyingGlassIcon
+  - Clean, compact design perfect for headers
+
+  2. Input with Keyboard Shortcut
+
+  Application UI.Forms.Input Groups.Input with keyboard shortcut
+  - Shows "⌘K" shortcut hint
+  - Modern search UX that users expect
+  - Great for power users
+
+  For a header, I'd recommend the first one with a search icon - it's the most recognizable and space-efficient.
+```
+
+### Directly use the JSON data file
 
 A small "skeleton" file with component names, but without full code, can be useful for an LLM coding
 assistant (Claude Desktop / Code, etc.), since the complete component file is too large (~6 MB) for
@@ -124,7 +171,21 @@ npx github:richardkmichael/tailwindplus-downloader#latest --debug
 npx github:richardkmichael/tailwindplus-downloader#latest --debug-short-test
 ```
 
-### Diff Script
+### Unauthenticated usage
+
+The downloader can run unauthenticated, which will download only the freely available TailwindPlus
+components.  This can be helpful for testing, or examining the JSON file structure.
+
+However, there are very few free TailwindPlus components -- they are intended as demo only.
+
+TailwindPlus must be purchased for this downloader to be useful.
+
+```bash
+npx github:richardkmichael/tailwindplus-downloader#latest --unauthenticated [options]
+```
+
+
+## Diff Script
 
 The diff script has a variety of options to compare between different versions, or a framework only;
 see help.
