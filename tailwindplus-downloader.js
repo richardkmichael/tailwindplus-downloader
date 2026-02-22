@@ -361,6 +361,7 @@ class TailwindPlusDownloader {
 
   async start() {
     try {
+      await this._checkOutputExists();
       await this._initializeBrowser();
 
       const discovery = await this._discoverUrls();
@@ -707,6 +708,43 @@ class TailwindPlusDownloader {
     const email = await read({ prompt: 'Email: ' });
     const password = await read({ prompt: 'Password: ', silent: true, replace: '*' });
     return { email: email.trim(), password: password.trim(), source: 'prompt' };
+  }
+
+  async _checkOutputExists() {
+    const output = this.options.output;
+    const isDir = this.options.outputFormat === 'dir';
+    const kind = isDir ? 'directory' : 'file';
+
+    if (!fs.existsSync(output)) return;
+
+    // For directories, only warn if non-empty (empty dir has no data to lose)
+    if (isDir && fs.readdirSync(output).length === 0) return;
+
+    if (this.options.overwrite) {
+      process.stderr.write(`Output ${kind} exists: ${output} — overwriting.\n`);
+      this.logger.warn(`Output ${kind} exists: ${output} — overwriting.`);
+    } else {
+      // Non-interactive stdin (piped/CI): abort rather than hang
+      if (!process.stdin.isTTY) {
+        throw new DownloaderError(
+          `Output ${kind} already exists: ${output}. Use --overwrite to overwrite.`
+        );
+      }
+
+      process.stderr.write(`\nOutput ${kind} exists: ${output}\n`);
+      process.stderr.write('Overwrite?  Will result in data loss.\n');
+      const answer = await read({ prompt: '> NO/yes  (type `yes`): ' });
+      if (answer.trim() !== 'yes') {
+        throw new DownloaderError('Aborted.');
+      }
+      this.logger.warn(`Output ${kind} exists: ${output} — overwriting.`);
+    }
+
+    // For directories: delete before recreating to eliminate stale orphan files.
+    // JSON writeFileSync already replaces atomically, no pre-deletion needed.
+    if (isDir) {
+      fs.rmSync(output, { recursive: true });
+    }
   }
 
   async _trySaveCredentials(credentials) {
@@ -1267,8 +1305,7 @@ class TailwindPlusDownloader {
     sortSnippetsRecursively(this.componentData);
 
     this.logger.debug(`Writing component directory: ${outputDir}`);
-    fs.rmSync(outputDir, { recursive: true, force: true });
-    fs.mkdirSync(outputDir);
+    fs.mkdirSync(outputDir, { recursive: true });
 
     this._writeComponentFiles(outputDir, this.componentData, []);
 
@@ -1807,6 +1844,11 @@ function parseArgs() {
       default: 'json',
       describe: 'Output format: json (single file) or dir (directory tree of individual component files)'
     })
+    .option('overwrite', {
+      type: 'boolean',
+      default: false,
+      describe: 'Overwrite existing output file or directory without prompting'
+    })
     .check((argv) => {
       // Validate workers bounds
       if (argv.workers <= 0) {
@@ -1832,6 +1874,7 @@ function parseArgs() {
   return {
     output: argv.output,
     outputFormat: argv.outputFormat,
+    overwrite: argv.overwrite,
     workers: argv.workers,
     cookies: argv.cookies,
     session: argv.session || CONFIG.session,
