@@ -385,7 +385,11 @@ class TailwindPlusDownloader {
         this.componentData.Ecommerce = this._processEcommerceComponents(this.componentData.Ecommerce);
       }
 
-      this._processResultsAndWriteOutput();
+      if (this.options.outputFormat === 'dir') {
+        this._processResultsAndWriteDirectory();
+      } else {
+        this._processResultsAndWriteOutput();
+      }
     } catch (error) {
       if (error instanceof DownloaderError) {
         this.logger.error(error.message);
@@ -1249,20 +1253,70 @@ class TailwindPlusDownloader {
     fs.writeFileSync(outputFile, JSON.stringify(outputData, sortedObjects, 2));
   }
 
+  _processResultsAndWriteDirectory() {
+    const outputDir = this.options.output;
+
+    const endTime = new Date();
+    const durationMs = endTime - this.startTime;
+    const durationSec = (durationMs / 1000).toFixed(1);
+
+    const componentCount = this._countComponents(this.componentData);
+
+    // Sort snippets arrays for stable output
+    this.logger.debug('Sorting component data for stable output');
+    sortSnippetsRecursively(this.componentData);
+
+    this.logger.debug(`Writing component directory: ${outputDir}`);
+    fs.rmSync(outputDir, { recursive: true, force: true });
+    fs.mkdirSync(outputDir);
+
+    this._writeComponentFiles(outputDir, this.componentData, []);
+
+    const metadata = {
+      component_count: componentCount,
+      download_duration: `${durationSec}s`,
+      downloaded_at: this.startTime.toISOString(),
+      downloader_version: packageJson.version,
+      version: this.version,
+    };
+    fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify(metadata, sortedObjects, 2));
+  }
+
+  _writeComponentFiles(outputDir, data, pathParts) {
+    for (const [key, value] of Object.entries(data)) {
+      if (!value || typeof value !== 'object') continue;
+      if (value.snippets && Array.isArray(value.snippets)) {
+        for (const snippet of value.snippets) {
+          const ext = snippet.name === 'react' ? 'jsx' : snippet.name === 'vue' ? 'vue' : 'html';
+          const modePart = snippet.mode ? `-${snippet.mode}` : '';
+          const filename = `${snippet.name}${modePart}.${ext}`;
+          const versionDir = `v${snippet.version}`;
+          const snippetDir = path.join(outputDir, ...pathParts, key, versionDir);
+          fs.mkdirSync(snippetDir, { recursive: true });
+          fs.writeFileSync(path.join(snippetDir, filename), snippet.code);
+        }
+      } else {
+        this._writeComponentFiles(outputDir, value, [...pathParts, key]);
+      }
+    }
+  }
+
   _showStopMessage() {
     const endTime = new Date();
     const durationMs = endTime - this.startTime;
     const durationSec = (durationMs / 1000).toFixed(1);
 
     if (fs.existsSync(this.options.output)) {
-      const stats = fs.statSync(this.options.output);
-      const sizeKB = Math.round(stats.size / 1024);
-
-      const componentCount = this._countComponents(this.componentData);
+      const savedMessage = this.options.outputFormat === 'dir'
+        ? `Download complete! Components saved to directory ${this.options.output}`
+        : (() => {
+          const sizeKB = Math.round(fs.statSync(this.options.output).size / 1024);
+          return `Download complete! Components saved to ${this.options.output} (${sizeKB} KB)`;
+        })();
 
       const messageLines = [
         `Discovered ${this.urlCount} URLs with ${this.componentCount} individual components.`,
-        `Download complete! Components saved to ${this.options.output} (${sizeKB} KB)`,
+        savedMessage,
         `Duration: ${durationSec}s`
       ];
 
@@ -1698,7 +1752,7 @@ function parseArgs() {
     .option('output', {
       type: 'string',
       requiresArg: true,
-      describe: `Path to save downloaded components (default: ${CONFIG.outputBase}-[TIMESTAMP].json)`
+      describe: `Path to save downloaded components. For --output-format=json (default): ${CONFIG.outputBase}-[TIMESTAMP].json. For --output-format=dir: ${CONFIG.outputBase}-[TIMESTAMP]/`
     })
     .option('workers', {
       type: 'number',
@@ -1748,6 +1802,11 @@ function parseArgs() {
       default: false,
       describe: 'Download only free (unauthenticated) components without login'
     })
+    .option('output-format', {
+      choices: ['json', 'dir'],
+      default: 'json',
+      describe: 'Output format: json (single file) or dir (directory tree of individual component files)'
+    })
     .check((argv) => {
       // Validate workers bounds
       if (argv.workers <= 0) {
@@ -1763,6 +1822,7 @@ function parseArgs() {
     })
     .usage('Usage: $0 [options]')
     .example('$0 --output=components.json', 'Download to specific file')
+    .example('$0 --output-format=dir --output=components/', 'Write components as a directory tree')
     .example('$0 --workers=5 --debug', 'Slower download with debug logging')
     .epilog('Options can be specified as --option=value or --option value')
     .help('help')
@@ -1770,7 +1830,8 @@ function parseArgs() {
     .parseSync();
 
   return {
-    output: argv.output || CONFIG.output,
+    output: argv.output,
+    outputFormat: argv.outputFormat,
     workers: argv.workers,
     cookies: argv.cookies,
     session: argv.session || CONFIG.session,
@@ -1787,6 +1848,13 @@ function parseArgs() {
 
 async function main() {
   const options = parseArgs();
+
+  // Derive output path default based on format when not explicitly specified
+  if (!options.output) {
+    options.output = options.outputFormat === 'dir'
+      ? `${CONFIG.outputBase}-${CONFIG.version}`
+      : CONFIG.output;
+  }
 
   // Derive log filename if --log is used as a flag
   if (options.log === true) {
