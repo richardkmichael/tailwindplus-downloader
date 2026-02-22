@@ -552,6 +552,9 @@ class TailwindPlusDownloader {
       if (result === 'bad_credentials') {
         this.logger.error('Login failed, bad credentials.');
 
+        if (!process.stdin.isTTY) {
+          throw new DownloaderError('Login failed: bad credentials. Cannot prompt for new credentials in non-interactive mode.');
+        }
         const answer = await read({ prompt: 'Try again with new credentials? [Y/n]: ' });
         if (answer.toLowerCase() === 'n' || answer.toLowerCase() === 'no') {
           throw new DownloaderError('User aborted after failed login attempt.');
@@ -583,6 +586,11 @@ class TailwindPlusDownloader {
   async _obtainCredentials() {
     let credentials = this._tryLoadCredentials(this.credentials);
     if (!credentials) {
+      if (!process.stdin.isTTY) {
+        throw new DownloaderError(
+          `No credentials found. Provide a credentials file (${this.credentials}) or run interactively.`
+        );
+      }
       credentials = await this._promptCredentials();
     }
 
@@ -748,6 +756,8 @@ class TailwindPlusDownloader {
   }
 
   async _trySaveCredentials(credentials) {
+    if (!process.stdin.isTTY) return;
+
     const save = await read({ prompt: `\nSave credentials to file '${this.credentials}'? (WARNING: Security risk) [y/N]: ` });
     if (save.toLowerCase().startsWith('y')) {
       const { email, password } = credentials;
