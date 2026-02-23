@@ -100,6 +100,25 @@ Then ask for a component:
   For a header, I'd recommend the first one with a search icon - it's the most recognizable and space-efficient.
 ```
 
+### Agent skill
+
+A skill is provided in `contrib/tailwind-plus/` to allow the agent to automatically browse and read
+components from the directory output when asked to build UI.
+
+Install it by symlinking into a skills directory.
+
+Global:
+
+```bash
+ln -s /path/to/tailwindplus-downloader/contrib/tailwind-plus ~/.claude/skills/tailwind-plus
+```
+
+Project:
+
+```bash
+ln -s /path/to/tailwindplus-downloader/contrib/tailwind-plus .claude/skills/tailwind-plus
+```
+
 ### Directory output
 
 Use `--output-format=dir` to write each component snippet as an individual file in a directory tree.
