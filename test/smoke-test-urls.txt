@@ -1,0 +1,30 @@
+# Smoke test URLs - representative sample for testing downloader options
+# Run with: --debug-url-file=smoke-test-urls.txt
+
+# Marketing - sections
+https://tailwindcss.com/plus/ui-blocks/marketing/sections/heroes
+https://tailwindcss.com/plus/ui-blocks/marketing/sections/feature-sections
+
+# Marketing - elements
+https://tailwindcss.com/plus/ui-blocks/marketing/elements/headers
+
+# Marketing - page example
+https://tailwindcss.com/plus/ui-blocks/marketing/page-examples/landing-pages
+
+# Application UI - forms
+https://tailwindcss.com/plus/ui-blocks/application-ui/forms/input-groups
+
+# Application UI - navigation
+https://tailwindcss.com/plus/ui-blocks/application-ui/navigation/navbars
+
+# Application UI - overlays
+https://tailwindcss.com/plus/ui-blocks/application-ui/overlays/modal-dialogs
+
+# Application UI - page example
+https://tailwindcss.com/plus/ui-blocks/application-ui/page-examples/home-screens
+
+# Ecommerce - components (no modes)
+https://tailwindcss.com/plus/ui-blocks/ecommerce/components/product-overviews
+
+# Ecommerce - page example (no modes)
+https://tailwindcss.com/plus/ui-blocks/ecommerce/page-examples/product-pages
