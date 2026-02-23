@@ -141,24 +141,12 @@ The skeleton file provides the LLM with the structure of the JSON file, allowing
   * use `jq` to query the full JSON file for the code for a _specific_ component
   * _search_ component _names_ to make component suggestions
 
-Generate the skeleton file with `jq`:
+Create the skeleton file:
 
 ```bash
-jq '
-def walk:
-  . as $in |
-    if type == "object" then
-      reduce keys[] as $key ({}; . + {($key): ($in[$key] | walk)})
-    elif type == "array" then
-      map(walk)
-    elif type == "string" then
-      if length > 100 then "<CONTENT>" else . end
-    else .
-    end;
-
-# Keep metadata, replace large string content in .tailwindplus
-. + {"tailwindplus": (.tailwindplus | walk)}
-' tailwindplus-components-*.json > tailwindplus-skeleton.json
+npm run create-skeleton
+npm run create-skeleton -- myfile.json   # pass a specific file (note: -- is required by npm)
+# or directly: scripts/create-skeleton.sh [--help] [FILE]
 ```
 
 Add only the skeleton file as context to a coding session or project. Then provide the LLM access to
