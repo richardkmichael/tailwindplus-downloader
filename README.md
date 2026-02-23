@@ -6,12 +6,13 @@
 A downloader for TailwindPlus components in HTML, React, and Vue formats across Tailwind CSS v3 and
 v4 in system, light, and dark modes; and a diff tool to compare components between downloads.
 
-TailwindPlus components are downloaded into a structured JSON file, preserving the component
-organization.
+TailwindPlus components are downloaded into a structured JSON file or a directory tree of individual
+files, preserving the component organization.
 
 The JSON file can be used with the [TailwindPlus MCP
-server](https://github.com/richardkmichael/mcp-tailwindplus), or directly with `jq`. See below for
-more.
+server](https://github.com/richardkmichael/mcp-tailwindplus), or directly with `jq`. The directory
+output allows an agent to naturally discover and read components using regular CLI tooling. See below
+for more.
 
 The diff tool is helpful because TailwindPlus undergoes small fixes, for which there is no changelog.
 
@@ -46,11 +47,14 @@ echo '{"email": "your-email@example.com", "password": "your-password"}' > .tailw
 ## Features
 
 - Downloads all UI components in HTML, React, and Vue frameworks for both Tailwind CSS v3 and v4 in
-  system, light, and dark modes into a JSON file, preserving the hierarchical organization
+  system, light, and dark modes, preserving the hierarchical organization
     - Note: eCommerce components do not have modes
+- Two output formats: a single JSON file (`--output-format=json`, default) or a directory tree of
+  individual component files (`--output-format=dir`)
 - Defaults to a 15 worker pool with retries for fast, reliable downloads, adjust with `--workers N`
-- Timestamped output files allow comparing component versions between downloads
+- Timestamped output names allow comparing component versions between downloads
 - Handles authentication via stored credentials or interactive prompts with session persistence
+- Prompts before overwriting existing output; use `--overwrite` to skip the prompt in scripts
 
 ## Using TailwindPlus with an agent
 
@@ -96,6 +100,55 @@ Then ask for a component:
   For a header, I'd recommend the first one with a search icon - it's the most recognizable and space-efficient.
 ```
 
+### Agent skill
+
+A skill is provided in `contrib/tailwind-plus/` to allow the agent to automatically browse and read
+components from the directory output when asked to build UI.
+
+Install it by symlinking into a skills directory.
+
+Global:
+
+```bash
+ln -s /path/to/tailwindplus-downloader/contrib/tailwind-plus ~/.claude/skills/tailwind-plus
+```
+
+Project:
+
+```bash
+ln -s /path/to/tailwindplus-downloader/contrib/tailwind-plus .claude/skills/tailwind-plus
+```
+
+### Directory output
+
+Use `--output-format=dir` to write each component snippet as an individual file in a directory tree.
+An agent can then discover and selectively read components using regular CLI tooling (`ls`, `cat`,
+etc.) without loading the entire ~6 MB JSON file into context.
+
+```bash
+npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir
+```
+
+The directory structure mirrors the component hierarchy:
+
+```
+tailwindplus-components-[TIMESTAMP]/
+├── metadata.json
+└── Marketing/
+    └── Page Sections/
+        └── Hero Sections/
+            └── Simple centered/
+                ├── v3/
+                │   ├── html-light.html
+                │   ├── html-dark.html
+                │   ├── html-system.html
+                │   ├── react-light.jsx
+                │   └── ...
+                └── v4/
+                    ├── html-light.html
+                    └── ...
+```
+
 ### Directly use the JSON data file
 
 A small "skeleton" file with component names, but without full code, can be useful for an LLM coding
@@ -107,24 +160,12 @@ The skeleton file provides the LLM with the structure of the JSON file, allowing
   * use `jq` to query the full JSON file for the code for a _specific_ component
   * _search_ component _names_ to make component suggestions
 
-Generate the skeleton file with `jq`:
+Create the skeleton file:
 
 ```bash
-jq '
-def walk:
-  . as $in |
-    if type == "object" then
-      reduce keys[] as $key ({}; . + {($key): ($in[$key] | walk)})
-    elif type == "array" then
-      map(walk)
-    elif type == "string" then
-      if length > 100 then "<CONTENT>" else . end
-    else .
-    end;
-
-# Keep metadata, replace large string content in .tailwindplus
-. + {"tailwindplus": (.tailwindplus | walk)}
-' tailwindplus-components-*.json > tailwindplus-skeleton.json
+npm run create-skeleton
+npm run create-skeleton -- myfile.json   # pass a specific file (note: -- is required by npm)
+# or directly: scripts/create-skeleton.sh [--help] [FILE]
 ```
 
 Add only the skeleton file as context to a coding session or project. Then provide the LLM access to
@@ -145,6 +186,15 @@ npx github:richardkmichael/tailwindplus-downloader#latest
 
 # Custom output file
 npx github:richardkmichael/tailwindplus-downloader#latest --output ./my-components.json
+
+# Directory output (default name: tailwindplus-components-[TIMESTAMP]/)
+npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir
+
+# Directory output to a specific path
+npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir --output=./components
+
+# Overwrite existing output without prompting (useful in scripts with a fixed --output path)
+npx github:richardkmichael/tailwindplus-downloader#latest --output=./components --output-format=dir --overwrite
 
 # Custom credentials file
 npx github:richardkmichael/tailwindplus-downloader#latest --credentials ./my-credentials.json
