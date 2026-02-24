@@ -1,7 +1,6 @@
 {
   "name": "tailwindplus-downloader",
   "version": "3.0.0",
-  "main": "tailwindplus-download.js",
   "type": "module",
   "engines": {
     "node": "^20.19.0 || ^22.12.0 || >=23"
@@ -9,11 +8,17 @@
   "description": "A downloader for TailwindPlus components with diff comparison tools",
   "author": "Richard Michael",
   "license": "MIT",
+  "files": [
+    "tailwindplus-downloader.js",
+    "tailwindplus-diff.js",
+    "scripts/create-skeleton.sh"
+  ],
   "bin": {
     "tailwindplus-downloader": "tailwindplus-downloader.js",
     "tailwindplus-diff": "tailwindplus-diff.js",
     "twp-downloader": "tailwindplus-downloader.js",
-    "twp-diff": "tailwindplus-diff.js"
+    "twp-diff": "tailwindplus-diff.js",
+    "twp-create-skeleton": "scripts/create-skeleton.sh"
   },
   "dependencies": {
     "playwright": "^1.52.0",
