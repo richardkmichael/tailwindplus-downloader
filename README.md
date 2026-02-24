@@ -6,7 +6,7 @@
 A downloader for TailwindPlus components (HTML, React, Vue) across Tailwind CSS v3 and v4 in
 system, light, and dark modes. Includes a diff tool to compare component versions between downloads.
 
-Downloads to single JSON file (default) or directory tree of components, for multiple use-cases.
+Download to a single JSON file (default) or directory tree of components, for multiple use-cases.
 
 ## Quick start
 
@@ -46,6 +46,7 @@ with `jq`. See Data Format below.
 
 ```bash
 npx github:richardkmichael/tailwindplus-downloader#latest
+# → tailwindplus-components-[TIMESTAMP].json
 npx github:richardkmichael/tailwindplus-downloader#latest --output ./my-components.json
 ```
 
@@ -57,6 +58,7 @@ Data Format below.
 
 ```bash
 npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir
+# → tailwindplus-components-[TIMESTAMP]/
 npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir --output=./components
 ```
 
