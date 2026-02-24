@@ -1051,7 +1051,7 @@ class TailwindPlusDownloader {
       } else {
         // Otherwise, continue
         for (const key in obj) {
-          if (obj.hasOwnProperty(key)) {
+          if (Object.prototype.hasOwnProperty.call(obj, key)) {
             deduplicateSnippets(obj[key]);
           }
         }
@@ -1217,20 +1217,20 @@ class TailwindPlusDownloader {
   }
 
   _mergeComponentData(target, source) {
-    for (const key in source) {
-      if (source[key] && typeof source[key] === 'object') {
-        if (source[key].snippets && Array.isArray(source[key].snippets)) {
+    for (const [key, value] of Object.entries(source)) {
+      if (value && typeof value === 'object') {
+        if (value.snippets && Array.isArray(value.snippets)) {
           // This is a component - merge snippets
           if (!target[key]) {
-            target[key] = { name: source[key].name, snippets: [] };
+            target[key] = { name: value.name, snippets: [] };
           }
-          target[key].snippets = target[key].snippets.concat(source[key].snippets);
+          target[key].snippets = target[key].snippets.concat(value.snippets);
         } else {
           // This is a product / category / subcategory - recurse
           if (!target[key]) {
             target[key] = {};
           }
-          this._mergeComponentData(target[key], source[key]);
+          this._mergeComponentData(target[key], value);
         }
       }
     }
@@ -1261,12 +1261,12 @@ class TailwindPlusDownloader {
 
   _countComponents(data) {
     let count = 0;
-    for (const key in data) {
-      if (typeof data[key] === 'object' && data[key] !== null) {
-        if (data[key].snippets && Array.isArray(data[key].snippets)) {
+    for (const [, value] of Object.entries(data)) {
+      if (value !== null && typeof value === 'object') {
+        if (value.snippets && Array.isArray(value.snippets)) {
           count++;
         } else {
-          count += this._countComponents(data[key]);
+          count += this._countComponents(value);
         }
       }
     }
