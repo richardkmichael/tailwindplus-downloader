@@ -7,3 +7,5 @@ diffs/
 credentials.json
 .tailwindplus-downloader-credentials.json
 .tailwindplus-downloader-session.json
+
+test/smoke-test-run/
