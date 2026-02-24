@@ -21,51 +21,56 @@ Output is written to `tailwindplus-components-[TIMESTAMP].json` in the current d
 
 ## Setup
 
-`npx` requires no installation and is ideal for one-off downloads.
+`npx` requires no installation.  Playwright Chromium requires system dependencies to be installed.
 
 To use the agent skill, clone the repo and symlink, or copy the
-[contrib/tailwind-plus/](contrib/tailwind-plus/) directory from GitHub:
+[`contrib/tailwind-plus/`](contrib/tailwind-plus/) directory from GitHub:
 
 ```bash
 git clone https://github.com/richardkmichael/tailwindplus-downloader
 ```
 
 With a clone, in-repo commands are also available:
-- `npm run create-skeleton`
 - `npx twp-downloader`
 - `npx twp-diff`
 - `npx twp-create-skeleton`
 
 ## Output
 
+Both JSON and directory output formats default to a timestamped destination.
+
 ### JSON (default)
 
-Downloads all components to a single JSON file. Use with the [TailwindPlus MCP
-server](https://github.com/richardkmichael/mcp-tailwindplus), use the agent skill, or query directly
-with `jq`. See Data Format below.
+Downloads all components to a single JSON file. See [Data Format](#data-format).
+
+Use with the [TailwindPlus MCP server](https://github.com/richardkmichael/mcp-tailwindplus), use the
+agent skill, or query directly with `jq`.
 
 ```bash
-npx github:richardkmichael/tailwindplus-downloader#latest
 # → tailwindplus-components-[TIMESTAMP].json
-npx github:richardkmichael/tailwindplus-downloader#latest --output ./my-components.json
+npx github:richardkmichael/tailwindplus-downloader#latest
+
+npx github:richardkmichael/tailwindplus-downloader#latest --output ./twp.json
 ```
 
 ### Directory
 
-Downloads each component snippet as an individual file in a directory tree. Agents can discover and
-read components using CLI tools (`ls`, `cat`, etc.) without loading the full JSON into context. See
-Data Format below.
+Downloads each component snippet as an individual file in a directory tree. See [Data Format](#data-format).
+
+Agents can discover and read components using CLI tools (`ls`, `cat`, etc.) without loading the full
+JSON into context.
 
 ```bash
-npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir
 # → tailwindplus-components-[TIMESTAMP]/
-npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir --output=./components
+npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir
+
+npx github:richardkmichael/tailwindplus-downloader#latest --output-format=dir --output=./twp
 ```
 
 ## Credentials
 
-Eventually the saved session will expire and you will be prompted for credentials again.
-To avoid prompting, save credentials as a JSON file:
+Eventually the saved session will expire and you will be prompted for credentials again.  To avoid
+prompting, save credentials as a JSON file:
 
 ```bash
 echo '{"email": "your-email@example.com", "password": "your-password"}' > .tailwindplus-downloader-credentials.json
@@ -78,7 +83,7 @@ echo '{"email": "your-email@example.com", "password": "your-password"}' > .tailw
 > [!TIP]
 > Use the [TailwindPlus MCP server](https://github.com/richardkmichael/mcp-tailwindplus).  It uses the JSON file from the downloader.
 
-Then ask for a component:
+Ask for a component:
 
 ```
 > I need a simple one-line search input to put in the app header.
@@ -117,8 +122,9 @@ Then ask for a component:
 
 ### Agent skill
 
-A skill in `contrib/tailwind-plus/` allows the agent to automatically browse and read components
-from the directory output when asked to build UI. See Setup for installation options.
+A skill in [`contrib/tailwind-plus/`](contrib/tailwind-plus/) allows the agent to automatically
+browse and read components from the directory output when asked to build UI. See [Setup](#setup) for
+installation options.
 
 Install by symlinking into a skills directory:
 
@@ -139,17 +145,17 @@ command execution MCP server.
 ```bash
 # Within the repo:
 npm run create-skeleton
-npm run create-skeleton -- myfile.json   # specific file (note: -- is required by npm)
+npm run create-skeleton -- twp.json   # specific file (note: -- is required by npm)
 
 # Via npx:
 npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-create-skeleton
-npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-create-skeleton myfile.json
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-create-skeleton twp.json
 ```
 
 Add the skeleton file as context to a coding session. Example `jq` query:
 
 ```
-jq '.tailwindplus.Marketing."Page Sections"."Hero Sections"."Simple centered".snippets[] | select(.name == "html" and .version == 4) | .code' --raw-output path/to/tailwindplus-components.json
+jq '.tailwindplus.Marketing."Page Sections"."Hero Sections"."Simple centered".snippets[] | select(.name == "html" and .version == 4) | .code' --raw-output path/to/twp.json
 ```
 
 ## Additional usage
@@ -162,7 +168,7 @@ npx github:richardkmichael/tailwindplus-downloader#latest --help
 npx github:richardkmichael/tailwindplus-downloader#latest --workers 10
 
 # Overwrite existing output without prompting (useful in scripts)
-npx github:richardkmichael/tailwindplus-downloader#latest --output=./components --overwrite
+npx github:richardkmichael/tailwindplus-downloader#latest --output=./twp --overwrite
 
 # Custom credentials or session file
 npx github:richardkmichael/tailwindplus-downloader#latest --credentials ./my-credentials.json
@@ -196,6 +202,7 @@ npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff 
 
 ## Dependencies
 
+- Playwright Chromium system dependencies
 - Node.js and npm
 - git — optional, provides better diffs (recommended)
 
@@ -289,18 +296,19 @@ tailwindplus-components-[TIMESTAMP]/
 
 ## How It Works
 
-The script uses Playwright automation with workers (browserContexts) to handle the React/InertiaJS
-site.  It includes robust authentication handling and precision data waiting to ensure reliable data
-extraction.
+The script uses Playwright automation with workers to handle the React/InertiaJS site.  It includes
+robust authentication handling and waiting to ensure reliable data extraction.
 
 1. Prompts for credentials, if not provided, and logs in to establish a session
 2. Saves the session information automatically, to use it on the next run -- no need to store credentials
 3. Discovers the complete TailwindPlus component hierarchy as a collection of pages
 4. Uses on-page controls to iterate through the "format": framework, TailwindCSS version, and mode
 5. Creates workers to process multiple component pages simultaneously
-6. All component data is organized into a hierarchical JSON structure matching the site organization
+6. Component data is organized into a hierarchy (JSON file or directory) matching the site organization
 
-## Code Quality
+## Development
+
+### Code Quality
 
 This project uses ESLint v9 for code quality control.
 
@@ -310,4 +318,14 @@ npm run lint
 
 # Fix auto-fixable issues
 npm run lint:fix
+```
+
+### Testing
+
+The smoke test covers permutations of output options (JSON and directory formats, `--overwrite`,
+`--log`, default timestamped paths) using actual downloads.  Requires an authenticated session or
+credentials file.
+
+```bash
+bash test/smoke-test.sh
 ```
