@@ -323,9 +323,9 @@ npm run lint:fix
 ### Testing
 
 The smoke test covers permutations of output options (JSON and directory formats, `--overwrite`,
-`--log`, default timestamped paths) using actual downloads.  Requires an authenticated session or
-credentials file.
+`--log`, default timestamped paths) using actual downloads.  Takes ~7 minutes.  Requires an
+authenticated session or credentials file.
 
 ```bash
-bash test/smoke-test.sh
+npm run smoke-test
 ```

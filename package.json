@@ -35,6 +35,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "eslint --config eslint.config.cjs \"**/*.js\"",
     "lint:fix": "eslint --config eslint.config.cjs \"**/*.js\" --fix",
-    "create-skeleton": "bash scripts/create-skeleton.sh"
+    "create-skeleton": "bash scripts/create-skeleton.sh",
+    "smoke-test": "bash test/smoke-test.sh"
   }
 }
