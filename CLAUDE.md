@@ -24,3 +24,17 @@ A successful run logs: "10 URLs … 92 individual components".
 ## Linting
 - Run eslint as: `npm run lint:fix` (uses `eslint.config.cjs`; plain `npx eslint` won't pick up the config)
 - To lint a specific file: `npx eslint --config eslint.config.cjs --fix <FILE>`
+
+## Commit Message Format
+
+Use conventional commits:
+- `feat:` — new user-visible feature
+- `fix:` — bug fix
+- `perf:` — performance improvement
+- `refactor:` — code restructuring, no behavior change
+- `chore:` — maintenance, deps, tooling
+- `docs:` — documentation only
+- `test:` — tests only
+- Add `BREAKING CHANGE: <description>` in the commit body for breaking changes
+
+Multi-part changes: use bullet points in the body as before.
