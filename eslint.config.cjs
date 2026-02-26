@@ -41,6 +41,8 @@ module.exports = [
       "no-constant-binary-expression": "error",
 
       // Style rules
+      "object-shorthand": ["warn", "always"],
+      "no-nested-ternary": "warn",
       "indent": ["warn", 2],
       "quotes": ["warn", "single", { "allowTemplateLiterals": true }],
       "semi": ["warn", "always"],
