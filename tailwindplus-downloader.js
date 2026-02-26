@@ -49,16 +49,14 @@ class Logger {
       return;
     }
 
-    const timestamp = new Date().toISOString();
     const levelStr = Object.keys(LogLevel).find(key => LogLevel[key] === level);
+    const paddedLevel = levelStr.padEnd(this.levelWidth);
 
     if (this.destination === 'file') {
-      const paddedLevel = levelStr.padEnd(this.levelWidth);
+      const timestamp = new Date().toISOString();
       this.logStream.write(`[${timestamp}] [${paddedLevel}] ${message}\n`);
     } else {
-      const paddedLevel = levelStr.padEnd(this.levelWidth);
       const consoleMessage = `[${paddedLevel}] ${message}`;
-
       if (stream === 'stderr') {
         console.error(consoleMessage);
       } else {
@@ -221,7 +219,7 @@ function createConfig() {
 
   // Generate timestamp for both output filenames and JSON content
   const version = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
-  const outputBase = `tailwindplus-components`;
+  const outputBase = 'tailwindplus-components';
 
   return {
     outputBase,
@@ -232,7 +230,7 @@ function createConfig() {
     credentials: '.tailwindplus-downloader-credentials.json',
 
     urls: {
-      base: base,
+      base,
       login: `${base}/plus/login`,
       plus: `${base}/plus`,
       discovery: `${base}/plus/ui-blocks`,
@@ -301,10 +299,8 @@ function sortSnippetsRecursively(data) {
   }
 
   // Recurse into every property of the object or element of the array
-  for (const key in data) {
-    if (Object.prototype.hasOwnProperty.call(data, key)) {
-      sortSnippetsRecursively(data[key]);
-    }
+  for (const value of Object.values(data)) {
+    sortSnippetsRecursively(value);
   }
 }
 
@@ -312,14 +308,10 @@ function sortSnippetsRecursively(data) {
  * Replacer function to sort object keys for JSON.stringify
  */
 function sortedObjects(key, value) {
-  return value instanceof Object && !(value instanceof Array)
-    ? Object.keys(value)
-      .sort()
-      .reduce((sorted, key) => {
-        sorted[key] = value[key];
-        return sorted;
-      }, {})
-    : value;
+  if (value instanceof Object && !(value instanceof Array)) {
+    return Object.fromEntries(Object.keys(value).sort().map(k => [k, value[k]]));
+  }
+  return value;
 }
 
 // ===================================================================================
@@ -357,6 +349,10 @@ class TailwindPlusDownloader {
     this.urlCount = 0;
     this.jobQueue = [];
     this.currentFormat = null;
+  }
+
+  _elapsedSecondsSinceStart() {
+    return ((new Date() - this.startTime) / 1000).toFixed(1);
   }
 
   async start() {
@@ -424,10 +420,7 @@ class TailwindPlusDownloader {
       const baseName = path.basename(this.options.output, extension);
       this.tracesDir = `${baseName}.traces`;
 
-      // Create traces directory
-      if (!fs.existsSync(this.tracesDir)) {
-        fs.mkdirSync(this.tracesDir, { recursive: true });
-      }
+      fs.mkdirSync(this.tracesDir, { recursive: true });
 
       this.logger.debug(`Tracing enabled, traces will be saved to: ${this.tracesDir}`);
     }
@@ -481,15 +474,13 @@ class TailwindPlusDownloader {
         await page.goto(url);
         return;
       } catch (error) {
-        if (error.name === 'TimeoutError') {
-          if (attempt < CONFIG.retries.maxRetries) {
-            this.logger.warn(`Navigation timeout (attempt ${attempt}/${CONFIG.retries.maxRetries}): ${url}`);
-            continue;
-          } else {
-            throw new DownloaderError(`Navigation to ${url} failed after ${CONFIG.retries.maxRetries} attempts due to known intermittent Playwright issue. Please re-run.`);
-          }
+        if (error.name !== 'TimeoutError') {
+          throw error;
         }
-        throw error;
+        if (attempt === CONFIG.retries.maxRetries) {
+          throw new DownloaderError(`Navigation to ${url} failed after ${CONFIG.retries.maxRetries} attempts due to known intermittent Playwright issue. Please re-run.`);
+        }
+        this.logger.warn(`Navigation timeout (attempt ${attempt}/${CONFIG.retries.maxRetries}): ${url}`);
       }
     }
   }
@@ -555,8 +546,8 @@ class TailwindPlusDownloader {
         if (!process.stdin.isTTY) {
           throw new DownloaderError('Login failed: bad credentials. Cannot prompt for new credentials in non-interactive mode.');
         }
-        const answer = await read({ prompt: 'Try again with new credentials? [Y/n]: ' });
-        if (answer.toLowerCase() === 'n' || answer.toLowerCase() === 'no') {
+        const answer = (await read({ prompt: 'Try again with new credentials? [Y/n]: ' })).toLowerCase();
+        if (answer === 'n' || answer === 'no') {
           throw new DownloaderError('User aborted after failed login attempt.');
         }
         credentials = await this._promptCredentials();
@@ -849,7 +840,7 @@ class TailwindPlusDownloader {
     }
 
     this.logger.debug(`Discovered ${urls.length} component URLs with a total of ${totalComponentCount} individual components.`);
-    return { urls: urls, urlCount: urls.length, componentCount: totalComponentCount };
+    return { urls, urlCount: urls.length, componentCount: totalComponentCount };
   }
 
   _initializeDebugFilter() {
@@ -865,17 +856,35 @@ class TailwindPlusDownloader {
     return new Set();
   }
 
+  /**
+   * Reads the current format from the on-page form controls (framework, version, mode).
+   * Assumes the page is already loaded and a code panel is visible.
+   *
+   * @returns {Promise<Format>} Current format from the page controls
+   * @throws {DownloaderError} When required controls are not found
+   */
+  async _readCurrentFormat() {
+    const frameworkSelect = this.mainPage.locator(CONFIG.selectors.frameworkSelect).first();
+    const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
+    const currentModeInput = this.mainPage.locator(`${CONFIG.selectors.modeInput}:checked`).first();
+
+    const framework = await frameworkSelect.inputValue();
+    const version = parseInt(await versionSelect.inputValue(), 10);
+    const mode = await currentModeInput.inputValue();
+
+    if (!framework || isNaN(version) || !mode) {
+      throw new DownloaderError('Failed to get value for framework, version or mode - required controls not found');
+    }
+
+    return new Format(framework, version, mode);
+  }
 
   /**
    * Detects the current format/mode of TailwindPlus components (e.g., html-v3-system).
    * Navigates to the first URL and determines the format from the current values of the on-page form controls.
    * See `createConfig()` for CSS selectors and downloaded formats (all).
-   * The three format controls are:
-   *   - `mode` input radio group
-   *   - `framework` select with options
-   *   - `version` select with options
    *
-   * @returns {Promise<string>} Detected format object
+   * @returns {Promise<Format>} Detected format object
    * @throws {DownloaderError} When no URLs available or format detection fails
    */
   async _detectFormat() {
@@ -894,22 +903,7 @@ class TailwindPlusDownloader {
     // Show a code panel to reveal a version control
     await this._showOneCodePanel();
 
-    // Get current controls
-    const frameworkSelect = this.mainPage.locator(CONFIG.selectors.frameworkSelect).first();
-    const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
-    const currentModeInput = this.mainPage.locator(`${CONFIG.selectors.modeInput}:checked`).first();
-
-    // Get current values
-    const framework = await frameworkSelect.inputValue();
-    const version = parseInt(await versionSelect.inputValue(), 10);
-    const mode = await currentModeInput.inputValue();
-
-    // Check for empty string, null or undefined
-    if (!framework || isNaN(version) || !mode) {
-      throw new DownloaderError('Failed to get value for framework, version or mode - required controls not found');
-    }
-
-    const detectedFormat = new Format(framework, version, mode);
+    const detectedFormat = await this._readCurrentFormat();
     this.logger.debug(`Detected format: ${detectedFormat}`);
 
     return detectedFormat;
@@ -1050,10 +1044,8 @@ class TailwindPlusDownloader {
         obj.snippets = uniqueSnippets(obj.snippets);
       } else {
         // Otherwise, continue
-        for (const key in obj) {
-          if (Object.prototype.hasOwnProperty.call(obj, key)) {
-            deduplicateSnippets(obj[key]);
-          }
+        for (const value of Object.values(obj)) {
+          deduplicateSnippets(value);
         }
       }
     };
@@ -1081,22 +1073,7 @@ class TailwindPlusDownloader {
     // Expose the version control
     await this._showOneCodePanel();
 
-    // Get the controls
-    const frameworkSelect = this.mainPage.locator(CONFIG.selectors.frameworkSelect).first();
-    const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
-    const currentModeInput = this.mainPage.locator(`${CONFIG.selectors.modeInput}:checked`).first();
-
-    // Get the current format values
-    const currentFramework = await frameworkSelect.inputValue();
-    const currentVersion = parseInt(await versionSelect.inputValue(), 10);
-    const currentMode = await currentModeInput.inputValue();
-
-    // Check for empty string, null or undefined
-    if (!currentFramework || isNaN(currentVersion) || !currentMode) {
-      throw new DownloaderError('Failed to get value for framework, version or mode - required controls not found');
-    }
-
-    let currentFormat = new Format(currentFramework, currentVersion, currentMode);
+    let currentFormat = await this._readCurrentFormat();
     const { framework: targetFramework, version: targetVersion, mode: targetMode } = targetFormat;
 
     // If the format is already the target format, just return.  Workers can start.
@@ -1208,7 +1185,7 @@ class TailwindPlusDownloader {
 
     // Transform the list of URLs to a list of jobs
     this.jobQueue = urlsToProcess.map(url => ({
-      url: url,
+      url,
       status: 'pending',
       retryCount: 0
     }));
@@ -1219,7 +1196,7 @@ class TailwindPlusDownloader {
   _mergeComponentData(target, source) {
     for (const [key, value] of Object.entries(source)) {
       if (value && typeof value === 'object') {
-        if (value.snippets && Array.isArray(value.snippets)) {
+        if (Array.isArray(value.snippets)) {
           // This is a component - merge snippets
           if (!target[key]) {
             target[key] = { name: value.name, snippets: [] };
@@ -1261,9 +1238,9 @@ class TailwindPlusDownloader {
 
   _countComponents(data) {
     let count = 0;
-    for (const [, value] of Object.entries(data)) {
+    for (const value of Object.values(data)) {
       if (value !== null && typeof value === 'object') {
-        if (value.snippets && Array.isArray(value.snippets)) {
+        if (Array.isArray(value.snippets)) {
           count++;
         } else {
           count += this._countComponents(value);
@@ -1273,25 +1250,28 @@ class TailwindPlusDownloader {
     return count;
   }
 
-  _processResultsAndWriteOutput() {
-    const outputFile = this.options.output;
-
-    const endTime = new Date();
-    const durationMs = endTime - this.startTime;
-    const durationSec = (durationMs / 1000).toFixed(1);
-
+  _buildMetadata() {
+    const durationSec = this._elapsedSecondsSinceStart();
     const componentCount = this._countComponents(this.componentData);
 
-    // Sort snippets arrays for stable JSON output
     this.logger.debug('Sorting component data for stable output');
     sortSnippetsRecursively(this.componentData);
 
-    const outputData = {
-      version: this.version,
-      downloaded_at: this.startTime.toISOString(),
+    return {
       component_count: componentCount,
       download_duration: `${durationSec}s`,
+      downloaded_at: this.startTime.toISOString(),
       downloader_version: packageJson.version,
+      version: this.version,
+    };
+  }
+
+  _processResultsAndWriteOutput() {
+    const outputFile = this.options.output;
+    const metadata = this._buildMetadata();
+
+    const outputData = {
+      ...metadata,
       tailwindplus: this.componentData
     };
 
@@ -1303,38 +1283,26 @@ class TailwindPlusDownloader {
 
   _processResultsAndWriteDirectory() {
     const outputDir = this.options.output;
-
-    const endTime = new Date();
-    const durationMs = endTime - this.startTime;
-    const durationSec = (durationMs / 1000).toFixed(1);
-
-    const componentCount = this._countComponents(this.componentData);
-
-    // Sort snippets arrays for stable output
-    this.logger.debug('Sorting component data for stable output');
-    sortSnippetsRecursively(this.componentData);
+    const metadata = this._buildMetadata();
 
     this.logger.debug(`Writing component directory: ${outputDir}`);
     fs.mkdirSync(outputDir, { recursive: true });
 
     this._writeComponentFiles(outputDir, this.componentData, []);
-
-    const metadata = {
-      component_count: componentCount,
-      download_duration: `${durationSec}s`,
-      downloaded_at: this.startTime.toISOString(),
-      downloader_version: packageJson.version,
-      version: this.version,
-    };
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify(metadata, sortedObjects, 2));
   }
 
   _writeComponentFiles(outputDir, data, pathParts) {
     for (const [key, value] of Object.entries(data)) {
       if (!value || typeof value !== 'object') continue;
-      if (value.snippets && Array.isArray(value.snippets)) {
+      if (Array.isArray(value.snippets)) {
         for (const snippet of value.snippets) {
-          const ext = snippet.name === 'react' ? 'jsx' : snippet.name === 'vue' ? 'vue' : 'html';
+          let ext;
+          switch (snippet.name) {
+          case 'react': ext = 'jsx'; break;
+          case 'vue':   ext = 'vue'; break;
+          default:      ext = 'html';
+          }
           const modePart = snippet.mode ? `-${snippet.mode}` : '';
           const filename = `${snippet.name}${modePart}.${ext}`;
           const versionDir = `v${snippet.version}`;
@@ -1349,17 +1317,16 @@ class TailwindPlusDownloader {
   }
 
   _showStopMessage() {
-    const endTime = new Date();
-    const durationMs = endTime - this.startTime;
-    const durationSec = (durationMs / 1000).toFixed(1);
+    const durationSec = this._elapsedSecondsSinceStart();
 
     if (fs.existsSync(this.options.output)) {
-      const savedMessage = this.options.outputFormat === 'dir'
-        ? `Download complete! Components saved to directory ${this.options.output}`
-        : (() => {
-          const sizeKB = Math.round(fs.statSync(this.options.output).size / 1024);
-          return `Download complete! Components saved to ${this.options.output} (${sizeKB} KB)`;
-        })();
+      let savedMessage;
+      if (this.options.outputFormat === 'dir') {
+        savedMessage = `Download complete! Components saved to directory ${this.options.output}`;
+      } else {
+        const sizeKB = Math.round(fs.statSync(this.options.output).size / 1024);
+        savedMessage = `Download complete! Components saved to ${this.options.output} (${sizeKB} KB)`;
+      }
 
       const messageLines = [
         `Discovered ${this.urlCount} URLs with ${this.componentCount} individual components.`,
@@ -1497,6 +1464,13 @@ class Worker {
    * @returns {Promise<Object>} Component data organized by component name with HTML content
    * @throws {DownloaderError} When page navigation fails, data extraction fails, or format validation fails
    */
+
+  // Whitelist snippet properties for serialization; exclude internal page data fields.
+  _shapeSnippet(snippet) {
+    const { code, name, language, version, mode, supportsDarkMode, preview } = snippet;
+    return { code, name, language, version, mode, supportsDarkMode, preview };
+  }
+
   async extractPageData(job) {
     const url = job.url;
 
@@ -1553,8 +1527,8 @@ class Worker {
     let subcategory;
     try {
       const dataHandle = await this.page.waitForFunction(snippetsOfRequiredFormat, {
-        url: url,
-        expectedFormat: expectedFormat,
+        url,
+        expectedFormat,
         ecommerceUrl: CONFIG.urls.eCommerce
       });
 
@@ -1580,15 +1554,7 @@ class Worker {
     components.forEach(component => {
       componentData[product.name][category.name][subcategory.name][component.name] = {
         name: component.name,
-        snippets: [{
-          code: component.snippet.code,
-          name: component.snippet.name,
-          language: component.snippet.language,
-          version: component.snippet.version,
-          mode: component.snippet.mode,
-          supportsDarkMode: component.snippet.supportsDarkMode,
-          preview: component.snippet.preview
-        }]
+        snippets: [this._shapeSnippet(component.snippet)]
       };
     });
 
@@ -1739,21 +1705,13 @@ class Worker {
         }
 
         if (snippet) {
-          snippets.push({
-            code: snippet.code,
-            name: snippet.name,
-            language: snippet.language,
-            version: snippet.version,
-            mode: snippet.mode,
-            supportsDarkMode: snippet.supportsDarkMode,
-            preview: snippet.preview
-          });
+          snippets.push(this._shapeSnippet(snippet));
         }
       }
 
       componentData[product][category][subcategory][comp.name] = {
         name: comp.name,
-        snippets: snippets
+        snippets
       };
 
       this.logger.debug(`Collected ${snippets.length} snippets for ${comp.name}`);
@@ -1886,7 +1844,6 @@ function parseArgs() {
     outputFormat: argv.outputFormat,
     overwrite: argv.overwrite,
     workers: argv.workers,
-    cookies: argv.cookies,
     session: argv.session || CONFIG.session,
     credentials: argv.credentials || CONFIG.credentials,
     log: argv.log,

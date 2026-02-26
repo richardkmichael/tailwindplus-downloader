@@ -474,7 +474,7 @@ async function compareComponent(oldComponent, newComponent, comparisons, compone
     diffs: 0,
     hasDifferences: false,
     headerPrinted: false,
-    componentHeader: componentHeader
+    componentHeader
   };
 
   const frameworks = options.framework ? [options.framework] : ['html', 'react', 'vue'];
