@@ -487,7 +487,8 @@ class TailwindPlusDownloader {
 
   /**
    * Validates whether the current session is authenticated with TailwindPlus.
-   * Checks for presence of 'Sign in' link vs 'Account' button to determine login state.
+   * Reads auth state from the Inertia.js data-page JSON on div#app, which is
+   * reliable regardless of viewport size or responsive layout changes.
    * The session can eventually expire, depending on TailwindPlus policy.  When this occurs the
    * session is `invalid`, and credentials will be prompted for again.
    *
@@ -498,13 +499,17 @@ class TailwindPlusDownloader {
     this.logger.debug('Validating session');
     await this._retryGoto(this.mainPage, CONFIG.urls.plus);
 
-    const signInLink = this.mainPage.getByRole('link', { name: 'Sign in' });
-    const accountButton = this.mainPage.getByRole('button', { name: 'Account' });
+    const isAuthenticated = await this.mainPage.evaluate(() => {
+      const app = document.querySelector('div#app');
+      if (!app) return false;
+      try {
+        const pageData = JSON.parse(app.getAttribute('data-page') || '{}');
+        return !!pageData?.props?.auth?.user;
+      } catch {
+        return false;
+      }
+    });
 
-    const isSignInAbsent = !(await signInLink.isVisible());
-    const isAccountPresent = await accountButton.isVisible();
-
-    const isAuthenticated = isSignInAbsent && isAccountPresent;
     this.logger.debug(`Session validation result: ${isAuthenticated ? 'valid' : 'invalid'}`);
 
     return isAuthenticated;
@@ -555,12 +560,13 @@ class TailwindPlusDownloader {
     }
 
     this.logger.debug('Login successful');
-    // Set the session on the contextOptions which is passed to Workers
-    this.contextOptions.storageState = await this.context.storageState();
 
-    // Save the session to a file for next time
+    // Save the session to a file, then use the file path in contextOptions (passed to Workers).
+    // Using the file path is consistent with the pre-existing session path, and avoids any
+    // issue with in-memory storageState objects not being correctly applied to new contexts.
     await this.context.storageState({ path: this.session });
     this.logger.debug(`Session saved to ${this.session}`);
+    this.contextOptions.storageState = this.session;
 
     // Only save if credentials came from user input
     if (credentials.source === 'prompt') {
