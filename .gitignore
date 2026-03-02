@@ -9,3 +9,5 @@ credentials.json
 .tailwindplus-downloader-session.json
 
 test/smoke-test-run/
+test/smoke-test-runs/
+*.traces/

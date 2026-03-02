@@ -1,0 +1,2 @@
+# Single URL for auth scenario tests — one is enough to verify session is passed to workers.
+https://tailwindcss.com/plus/ui-blocks/marketing/sections/heroes

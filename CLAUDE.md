@@ -8,13 +8,42 @@
 ## Testing Guidelines
 - When testing the downloader scripts, use `--output=<SOME TEST FILE> --log`.  The `--log` flag creates a debug log with the same basename but `.log` suffix.
 
+## Smoke Tests
+
+Run the full suite from the repo root:
+
+```bash
+bash test/smoke-test.sh
+```
+
+Each run writes to a fresh `test/smoke-test-runs/run.PID/` directory so runs never overwrite each other and concurrent runs are safe.
+
+Run only tests whose names contain a filter string (case-sensitive):
+
+```bash
+bash test/smoke-test.sh "auth"                     # all auth tests
+bash test/smoke-test.sh "auth: credentials"        # one specific test
+bash test/smoke-test.sh "JSON"                     # all JSON output tests
+bash test/smoke-test.sh "non-TTY"                  # just the non-TTY abort tests
+```
+
+To generate a Playwright trace for a specific failing test, combine `--trace` with a filter (a filter is required — tracing a full run is not allowed):
+
+```bash
+bash test/smoke-test.sh --trace "dir: output with --log"
+```
+
+Trace files land in `<output-basename>.traces/` in the repo root (e.g. `dir.traces/`).  WARNING: traces contain login credentials and session tokens in plaintext — never commit or share them.
+
+Each test is self-contained in its own numbered subdirectory under `run.PID/` (e.g. `01-json-basic/`, `05-dir-exists-aborts/`).  Each test sets up its own preconditions and writes output to `output.json` or `output/` within its subdir.  Passing tests are cleaned up automatically; only failing test subdirs remain for inspection.  Check the relevant `output.log` file when a test fails.
+
 ## Testing a release tag via npx
 
 Smoke-test with the URL file and a prefixed output file:
 
 ```bash
 npx github:richardkmichael/tailwindplus-downloader#<tag> \
-  --debug-url-file=test/smoke-test-urls.txt \
+  --debug-url-file=test/many-test-urls.txt \
   --output=claude_exp-smoke-test.json \
   --log
 ```
@@ -24,6 +53,7 @@ A successful run logs: "10 URLs … 92 individual components".
 ## Linting
 - Run eslint as: `npm run lint:fix` (uses `eslint.config.cjs`; plain `npx eslint` won't pick up the config)
 - To lint a specific file: `npx eslint --config eslint.config.cjs --fix <FILE>`
+- Run shellcheck on shell scripts: `shellcheck test/smoke-test.sh`
 
 ## Commit Message Format
 

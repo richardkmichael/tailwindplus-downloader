@@ -1,5 +1,5 @@
 # Smoke test URLs - representative sample for testing downloader options
-# Run with: --debug-url-file=smoke-test-urls.txt
+# Run with: --debug-url-file=many-test-urls.txt
 
 # Marketing - sections
 https://tailwindcss.com/plus/ui-blocks/marketing/sections/heroes
