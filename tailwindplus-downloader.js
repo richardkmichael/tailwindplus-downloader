@@ -1088,9 +1088,12 @@ class TailwindPlusDownloader {
       return;
     }
 
-    // Helper function for response validation
-    const isTargetFormat = ({ snippet: { name: framework, version, mode } }) =>
-      framework === targetFramework && version === targetVersion && mode === targetMode;
+    // Validate that every component in a response matches the given intermediate target format.
+    // Each control change (framework, then version, then mode) only reaches the final target one
+    // axis at a time, so the response must be matched against the intermediate target, not the
+    // final one.
+    const isTargetFormat = (target, { snippet: { name: framework, version, mode } }) =>
+      framework === target.framework && version === target.version && mode === target.mode;
 
     const responseForTarget = (target) => {
       return async (response) => {
@@ -1107,7 +1110,7 @@ class TailwindPlusDownloader {
           if (!Array.isArray(components) || components.length === 0) {
             return false;
           }
-          return components.every(c => isTargetFormat(c));
+          return components.every(c => isTargetFormat(target, c));
         } catch (e) {
           return false;
         }
