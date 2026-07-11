@@ -1069,7 +1069,7 @@ class TailwindPlusDownloader {
     // Navigate to first page to access format controls
     await this.mainPage.goto(this.urls[0]);
 
-    const app = await this.mainPage.locator('div#app');
+    const app = this.mainPage.locator('div#app');
 
     const pageDataJson = await app.getAttribute('data-page');
     if (!pageDataJson) {
@@ -1124,42 +1124,39 @@ class TailwindPlusDownloader {
       const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
       const targetModeInput = this.mainPage.locator(`${CONFIG.selectors.modeInput}[value="${targetMode}"]`).first();
 
-      // Actions are performed sequentially (not Promise.all) to ensure each network response is
-      // handled before triggering the next.
+      // Change one axis at a time: arm the response wait, trigger the control, then wait for the
+      // matching response before the next change. Sequential (not Promise.all) so each network
+      // response is handled before the next control is touched. Returns the new current format.
+      const changeAxis = async (target, triggerControl) => {
+        const responsePromise = this.mainPage.waitForResponse(responseForTarget(target));
+        await triggerControl();
+        await responsePromise;
+        return target;
+      };
 
       if (currentFormat.framework !== targetFramework) {
         this.logger.debug(`Changing framework: ${currentFormat.framework} -> ${targetFramework}`);
-        const target = new Format(targetFramework, currentFormat.version, currentFormat.mode);
-        const responsePromise = this.mainPage.waitForResponse(responseForTarget(target));
-
-        await frameworkSelect.selectOption(targetFramework);
-        await responsePromise;
-
-        // Update current framework for next waiter
-        currentFormat = new Format(targetFramework, currentFormat.version, currentFormat.mode);
+        currentFormat = await changeAxis(
+          new Format(targetFramework, currentFormat.version, currentFormat.mode),
+          () => frameworkSelect.selectOption(targetFramework)
+        );
       }
 
       if (currentFormat.version !== targetVersion) {
         this.logger.debug(`Changing version: ${currentFormat.version} -> ${targetVersion}`);
-        const target = new Format(currentFormat.framework, targetVersion, currentFormat.mode);
-        const responsePromise = this.mainPage.waitForResponse(responseForTarget(target));
-
-        // Version is converted to a string, which is required by selectOption
-        await versionSelect.selectOption(String(targetVersion));
-        await responsePromise;
-
-        currentFormat = new Format(currentFormat.framework, targetVersion, currentFormat.mode);
+        currentFormat = await changeAxis(
+          new Format(currentFormat.framework, targetVersion, currentFormat.mode),
+          // Version is converted to a string, which is required by selectOption
+          () => versionSelect.selectOption(String(targetVersion))
+        );
       }
 
       if (targetMode !== null && currentFormat.mode !== targetMode) {
         this.logger.debug(`Changing mode: ${currentFormat.mode} -> ${targetMode}`);
-        const target = new Format(currentFormat.framework, currentFormat.version, targetMode);
-        const responsePromise = this.mainPage.waitForResponse(responseForTarget(target));
-
-        await targetModeInput.click();
-        await responsePromise;
-
-        currentFormat = new Format(currentFormat.framework, currentFormat.version, targetMode);
+        currentFormat = await changeAxis(
+          new Format(currentFormat.framework, currentFormat.version, targetMode),
+          () => targetModeInput.click()
+        );
       }
 
       // Verify format was set correctly
@@ -1456,9 +1453,13 @@ class Worker {
     this.logger.debug('Job queue empty');
   }
 
+  // Whitelist snippet properties for serialization; exclude internal page data fields.
+  _shapeSnippet(snippet) {
+    const { code, name, language, version, mode, supportsDarkMode, preview } = snippet;
+    return { code, name, language, version, mode, supportsDarkMode, preview };
+  }
 
   /**
-   *
    * Extracts component data from a page and validates format consistency.
    * Navigates to job URL, extracts data-page JSON, validates expected format, and processes components.
    *
@@ -1473,13 +1474,6 @@ class Worker {
    * @returns {Promise<Object>} Component data organized by component name with HTML content
    * @throws {DownloaderError} When page navigation fails, data extraction fails, or format validation fails
    */
-
-  // Whitelist snippet properties for serialization; exclude internal page data fields.
-  _shapeSnippet(snippet) {
-    const { code, name, language, version, mode, supportsDarkMode, preview } = snippet;
-    return { code, name, language, version, mode, supportsDarkMode, preview };
-  }
-
   async extractPageData(job) {
     const url = job.url;
 
