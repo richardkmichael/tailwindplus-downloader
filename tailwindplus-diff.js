@@ -205,45 +205,44 @@ function generateDiff(oldContent, newContent, outputFile, framework, safeName) {
       output += data.toString();
     });
 
+    const cleanup = () => {
+      fs.unlinkSync(oldFile);
+      fs.unlinkSync(newFile);
+    };
+
     gitProcess.on('close', (code) => {
       // Git diff returns 1 when files differ, which is expected
       if (code <= 1 && output.trim()) {
         fs.writeFileSync(outputFile, output);
         console.log(`        Diff saved: ${outputFile}`);
-      } else {
-        // Fall back to regular diff
-        const diffProcess = spawn('diff', ['-u', oldFile, newFile], {
-          stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        let diffOutput = '';
-        diffProcess.stdout.on('data', (data) => {
-          diffOutput += data.toString();
-        });
-
-        diffProcess.on('close', (diffCode) => {
-          if (diffCode === 1 && diffOutput.trim()) {
-            fs.writeFileSync(outputFile, diffOutput);
-            console.log(`        Diff saved: ${outputFile}`);
-          } else if (diffCode === 0) {
-            console.log(`        No differences found`);
-          } else {
-            console.log(`        Error generating diff`);
-          }
-
-          // Clean up temp files
-          fs.unlinkSync(oldFile);
-          fs.unlinkSync(newFile);
-          resolve();
-        });
-      }
-
-      if (code <= 1) {
-        // Clean up temp files
-        fs.unlinkSync(oldFile);
-        fs.unlinkSync(newFile);
+        cleanup();
         resolve();
+        return;
       }
+
+      // Fall back to regular diff
+      const diffProcess = spawn('diff', ['-u', oldFile, newFile], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let diffOutput = '';
+      diffProcess.stdout.on('data', (data) => {
+        diffOutput += data.toString();
+      });
+
+      diffProcess.on('close', (diffCode) => {
+        if (diffCode === 1 && diffOutput.trim()) {
+          fs.writeFileSync(outputFile, diffOutput);
+          console.log(`        Diff saved: ${outputFile}`);
+        } else if (diffCode === 0) {
+          console.log(`        No differences found`);
+        } else {
+          console.log(`        Error generating diff`);
+        }
+
+        cleanup();
+        resolve();
+      });
     });
   });
 }
