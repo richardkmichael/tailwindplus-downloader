@@ -6,6 +6,7 @@ description: Create release candidates or final releases for this project. Use w
   (draft final release). Handles version detection, semver assessment from commits,
   git tagging, package.json bumping, and GitHub release creation with a point-form
   changelog.
+disable-model-invocation: true
 ---
 
 # Release Skill
