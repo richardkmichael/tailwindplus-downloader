@@ -1,0 +1,13 @@
+# Dependabot version updates.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Keep dependency-bump PRs in the repo's conventional-commit style
+    # (chore(deps): ... for runtime deps, chore(deps-dev): ... for devDependencies).
+    commit-message:
+      prefix: "chore"
+      include: "scope"
