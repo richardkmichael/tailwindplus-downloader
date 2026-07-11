@@ -21,6 +21,18 @@ class DownloaderError extends Error {
   }
 }
 
+/**
+ * Session-level authentication failure.  Unlike an ordinary job failure this is not
+ * retryable: every subsequent request would fail the same way, so it aborts the run
+ * instead of being re-queued.  Mid-run re-login is deliberately not attempted.
+ */
+class SessionError extends DownloaderError {
+  constructor(message) {
+    super(message);
+    this.name = 'SessionError';
+  }
+}
+
 const LogLevel = {
   DEBUG: 1,
   INFO: 2,
@@ -208,6 +220,89 @@ async function stopTracing(context, tracesDir, identifier) {
   }
 }
 
+/**
+ * Decodes the HTML entities the server uses when embedding JSON in the data-page
+ * attribute.  A single left-to-right pass replaces each entity once, matching the
+ * browser's native attribute decoding: named (&quot; &apos; &amp; &lt; &gt;) plus
+ * decimal (&#NN;) and hex (&#xNN;) numeric entities.  The server encodes apostrophes
+ * as &#x27;, so numeric forms must be handled, not just a fixed named set.
+ *
+ * @param {string} text - Attribute value to decode
+ * @returns {string} Decoded text
+ */
+function decodeHtmlEntities(text) {
+  const named = { quot: '"', apos: '\'', amp: '&', lt: '<', gt: '>' };
+  return text.replace(
+    /&(?:#x([0-9a-fA-F]+)|#(\d+)|(quot|apos|amp|lt|gt));/g,
+    (match, hex, dec, name) => {
+      if (hex !== undefined) return String.fromCodePoint(parseInt(hex, 16));
+      if (dec !== undefined) return String.fromCodePoint(parseInt(dec, 10));
+      return named[name];
+    }
+  );
+}
+
+/**
+ * Extracts and parses the Inertia data-page JSON from raw page HTML.
+ * The attribute is server-rendered onto div#app, so no browser is needed to read it.
+ *
+ * @param {string} html - Raw HTML of a server-rendered Inertia page
+ * @returns {Object|null} Parsed data-page object, or null when missing or unparseable
+ */
+function parseDataPageFromHtml(html) {
+  const match = html.match(/data-page="([^"]*)"/);
+  if (!match) {
+    return null;
+  }
+  try {
+    return JSON.parse(decodeHtmlEntities(match[1]));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validates that every component in a page's data-page matches the expected format and
+ * returns the subcategory object.  eCommerce components carry no mode, so mode is
+ * compared as null for eCommerce URLs.
+ *
+ * The data-page of a plain GET is static, so a mismatch cannot resolve by waiting: it
+ * means the server rendered with a different account-level format (e.g. a user changed
+ * the on-page controls while the script was running).  Callers treat it as a failure.
+ *
+ * @param {Object} pageData - Parsed data-page object
+ * @param {string} url - Page URL, used for eCommerce detection and error messages
+ * @param {Format} expectedFormat - Format every component snippet must match
+ * @returns {Object} The subcategory object from the page data
+ * @throws {DownloaderError} When component data is missing or the format mismatches
+ */
+function subcategoryOfRequiredFormat(pageData, url, expectedFormat) {
+  const subcategory = pageData?.props?.subcategory;
+  const components = subcategory?.components;
+
+  if (!Array.isArray(components) || components.length === 0) {
+    throw new DownloaderError(`No component data found on ${url}`);
+  }
+
+  const isEcommerce = url.startsWith(CONFIG.urls.eCommerce);
+  const expectedMode = isEcommerce ? null : expectedFormat.mode;
+
+  const allSnippetsValid = components.every(component => {
+    const snippet = component.snippet;
+    return snippet?.name === expectedFormat.framework &&
+      snippet?.version === expectedFormat.version &&
+      snippet?.mode === expectedMode;
+  });
+
+  if (!allSnippetsValid) {
+    const firstSnippet = components[0].snippet ?? {};
+    const foundFormat = new Format(firstSnippet.name, firstSnippet.version, firstSnippet.mode ?? null);
+    throw new DownloaderError(`Format mismatch on ${url}: expected ${expectedFormat}, got ${foundFormat}`);
+  }
+
+  return subcategory;
+}
+
 function createConfig() {
   const base = 'https://tailwindcss.com';
 
@@ -354,6 +449,12 @@ class TailwindPlusDownloader {
     this.urlCount = 0;
     this.jobQueue = [];
     this.currentFormat = null;
+
+    // Mid-run re-authentication state.  `sessionGeneration` increments on each successful
+    // re-login; `_reauthPromise` single-flights concurrent re-auth attempts so a burst of
+    // simultaneous session expiries across workers triggers exactly one login.
+    this.sessionGeneration = 0;
+    this._reauthPromise = null;
   }
 
   _elapsedSecondsSinceStart() {
@@ -441,6 +542,10 @@ class TailwindPlusDownloader {
 
     this.context = await this.browser.newContext(this.contextOptions);
     this.context.setDefaultTimeout(CONFIG.timeout);
+
+    // Plain HTTP requests that share this context's cookies (kept in sync live, so a
+    // fresh login is picked up automatically).  Used for all authenticated page reads.
+    this.requestContext = this.context.request;
 
     // Authenticated mode never renders previews, so heavy sub-resources are aborted to
     // reduce load on the live site.  Unauthenticated mode is left untouched: its
@@ -541,7 +646,7 @@ class TailwindPlusDownloader {
    *
    * @throws {DownloaderError} When login fails after all retry attempts or user cancels
    */
-  async _login() {
+  async _login({ offerSave = true } = {}) {
     this.logger.debug('Logging in');
 
     // Mutable, since it could be invalid (if a typo) and re-prompted during flow.
@@ -585,8 +690,8 @@ class TailwindPlusDownloader {
     this.logger.debug(`Session saved to ${this.session}`);
     this.contextOptions.storageState = this.session;
 
-    // Only save if credentials came from user input
-    if (credentials.source === 'prompt') {
+    // Only save if credentials came from user input (never when silently re-authenticating)
+    if (offerSave && credentials.source === 'prompt') {
       await this._trySaveCredentials(credentials);
     }
   }
@@ -877,6 +982,79 @@ class TailwindPlusDownloader {
       return new Set(urls);
     }
     return new Set();
+  }
+
+  /**
+   * Re-authenticates after a mid-run session expiry, coordinating concurrent workers.
+   *
+   * Single-flight: the first caller performs the login while any others await the same attempt.
+   * `observedGeneration` is the session generation the caller saw before its failed request; if
+   * the session was already refreshed since (another worker won the race), this returns
+   * immediately so the caller simply retries.  A failed login is fatal and re-thrown as a
+   * SessionError so the run aborts loudly instead of looping.
+   *
+   * @param {number} observedGeneration - Session generation observed before the failed request
+   * @throws {SessionError} When re-authentication fails (e.g. credentials no longer valid)
+   */
+  _reauthenticate(observedGeneration) {
+    if (this.sessionGeneration > observedGeneration) {
+      return Promise.resolve();  // Another worker already refreshed the session; just retry.
+    }
+    if (!this._reauthPromise) {
+      this._reauthPromise = (async () => {
+        this.logger.warn('Session expired mid-run; re-authenticating with stored credentials');
+        try {
+          await this._login({ offerSave: false });
+        } catch (error) {
+          throw new SessionError(`Re-authentication failed: ${error.message}`);
+        }
+        this.sessionGeneration++;
+        this.logger.info('Re-authentication succeeded; resuming download');
+      })().finally(() => {
+        this._reauthPromise = null;
+      });
+    }
+    return this._reauthPromise;
+  }
+
+  /**
+   * Fetches a page with a plain authenticated GET (no browser page) and returns its parsed
+   * Inertia data-page object.  The format is an account-level server-side setting which a GET
+   * cannot disturb, so concurrent reads are safe.
+   *
+   * On a mid-run session expiry (login redirect, or an unauthenticated data-page) it
+   * re-authenticates and retries rather than failing, up to `maxRetries` re-auth attempts.  A
+   * SessionError escapes only when the session cannot be restored.
+   *
+   * @param {string} url - Page URL to fetch
+   * @returns {Promise<Object>} Parsed data-page object
+   * @throws {SessionError} When re-authentication cannot restore a valid session
+   * @throws {DownloaderError} When the request fails with a non-2xx status (retryable)
+   */
+  async _fetchPageData(url) {
+    for (let sessionAttempt = 0; ; sessionAttempt++) {
+      const observedGeneration = this.sessionGeneration;
+      const response = await this.requestContext.get(url, { timeout: CONFIG.timeout });
+
+      // A non-2xx that is not a login redirect is a transient/server problem, not a session
+      // problem: surface it as retryable so the normal job retry handles it.
+      const loginRedirect = response.url().includes('/login');
+      if (!loginRedirect && !response.ok()) {
+        throw new DownloaderError(`Request to ${url} failed with HTTP ${response.status()}`);
+      }
+
+      const pageData = loginRedirect ? null : parseDataPageFromHtml(await response.text());
+      if (pageData?.props?.auth?.user) {
+        return pageData;
+      }
+
+      // The response is unauthenticated: the session died.  Re-authenticate and retry.
+      if (sessionAttempt >= CONFIG.retries.maxRetries) {
+        throw new SessionError(`Session still invalid for ${url} after ${sessionAttempt} re-auth attempt(s)`);
+      }
+      this.logger.warn(`Session expired fetching ${url}; re-authenticating (attempt ${sessionAttempt + 1}/${CONFIG.retries.maxRetries})`);
+      await this._reauthenticate(observedGeneration);
+    }
   }
 
   /**
@@ -1176,11 +1354,11 @@ class TailwindPlusDownloader {
         );
       }
 
-      // Verify format was set correctly
-      const verifiedFormat = await this._detectFormat();
-      if (verifiedFormat.toString() !== targetFormat.toString()) {
-        throw new DownloaderError(`Verification failed, expected: ${targetFormat}, got: ${verifiedFormat}`);
-      }
+      // Verify the format persisted server-side: a fresh GET must render every
+      // component in the target format.  Cheaper than a browser navigation, and checks
+      // the server's persisted state rather than the just-clicked on-page controls.
+      const verifyData = await this._fetchPageData(this.urls[0]);
+      subcategoryOfRequiredFormat(verifyData, this.urls[0], targetFormat);
 
       this.logger.debug(`Set format: ${targetFormat}`);
     } catch (error) {
@@ -1417,15 +1595,16 @@ class Worker {
 
   /**
    * Starts the worker and begins processing jobs from the downloader's job queue.
-   * Creates browser context with session, starts tracing if enabled, and processes jobs until queue
-   * is empty.
+   * Authenticated jobs are plain HTTP GETs through the downloader's request context; only
+   * unauthenticated mode creates a browser context and page, since its extraction drives
+   * on-page controls.
    *
    * If a job (URL to download in the current format) fails, it is returned to the main downloader,
    * and re-queued to be attempted again; up to maxRetries.  A job generally fails with a timeout
-   * error in Playwright caused by network failure.  Some such failures may be successfully retried,
-   * however on occasion Playwright itself becomes sufficiently stuck that `maxRetries` can be
-   * reached.  Unfortunately, the script must be re-run in such a situation, because "partial
-   * downloads" are not supported.
+   * error caused by network failure.  Some such failures may be successfully retried, however if
+   * `maxRetries` is reached the script must be re-run, because "partial downloads" are not
+   * supported.  A mid-run session expiry is re-authenticated and resumed automatically; a
+   * SessionError aborts the run only when the session cannot be restored.
    *
    * @throws {DownloaderError} When context creation fails or job processing encounters fatal errors
    */
@@ -1437,19 +1616,18 @@ class Worker {
 
     this.state = 'started';
 
-    // Create context and page (received with session)
-    this.context = await this.browser.newContext(this.contextOptions);
-    this.context.setDefaultTimeout(CONFIG.timeout);
+    // Unauthenticated extraction needs a real page (received with session)
+    if (this.downloader.options.unauthenticated) {
+      this.context = await this.browser.newContext(this.contextOptions);
+      this.context.setDefaultTimeout(CONFIG.timeout);
 
-    // Start tracing if enabled
-    if (this.downloader.options.debugTrace) {
-      const traceLabel = this.downloader.options.unauthenticated
-        ? 'unauthenticated'
-        : this.downloader.currentFormat;
-      await startTracing(this.context, `worker-${this.id}-${traceLabel}`, `Worker ${this.id} (${traceLabel})`);
+      // Start tracing if enabled
+      if (this.downloader.options.debugTrace) {
+        await startTracing(this.context, `worker-${this.id}-unauthenticated`, `Worker ${this.id} (unauthenticated)`);
+      }
+
+      this.page = await this.context.newPage();
     }
-
-    this.page = await this.context.newPage();
 
     // Job processing loop
     while (this.downloader.jobQueue.length > 0) {
@@ -1470,6 +1648,12 @@ class Worker {
         this.downloader._processJobResult(job);
         this.logger.debug(`Completed job: ${job.url}`);
       } catch (error) {
+        // _fetchPageData already re-authenticates and retries on expiry; a SessionError here
+        // means the session could not be restored (bad credentials, or it kept failing).
+        // Abort rather than write partial data.
+        if (error instanceof SessionError) {
+          throw error;
+        }
         this.logger.warn(`Job failed: ${job.url}: ${error.message}`);
         job.error = error.message;
         job.status = 'failed';
@@ -1488,18 +1672,21 @@ class Worker {
 
   /**
    * Extracts component data from a page and validates format consistency.
-   * Navigates to job URL, extracts data-page JSON, validates expected format, and processes components.
+   * Fetches the job URL with a plain authenticated GET, parses the data-page JSON out of the raw
+   * HTML, validates the expected format, and processes components.
    *
    * The code is not obtained from the `<code>` DOM elements visible on the page, but rather
-   * directly from the JSON on the #app root.  This is significantly more reliable and much faster
-   * than (even automated) clicks on the page elements to reveal the code.  It is a fatal error if
-   * the expected code format is not found in the page JSON data.  This is to safeguard against the
-   * format being changed manually during script execution.  (This can occur if a user browses the
-   * TailwindPlus site while the script is running and changes the form controls.)
+   * directly from the server-rendered JSON on the #app root, so no browser page is needed at all.
+   * This is significantly more reliable and much faster than (even automated) clicks on the page
+   * elements to reveal the code.  It is a fatal error if the expected code format is not found in
+   * the page JSON data.  This is to safeguard against the format being changed manually during
+   * script execution.  (This can occur if a user browses the TailwindPlus site while the script is
+   * running and changes the form controls.)
    *
    * @param {Object} job - Job object containing URL and hierarchy info (product/category/subcategory)
    * @returns {Promise<Object>} Component data organized by component name with HTML content
-   * @throws {DownloaderError} When page navigation fails, data extraction fails, or format validation fails
+   * @throws {SessionError} When the session cannot be restored by re-authentication (aborts the run)
+   * @throws {DownloaderError} When the request fails, data extraction fails, or format validation fails
    */
   async extractPageData(job) {
     const url = job.url;
@@ -1510,67 +1697,10 @@ class Worker {
       throw new DownloaderError('No current format set by downloader');
     }
 
-    // Custom wait function that waits specifically for the required data
-    const snippetsOfRequiredFormat = (args) => {
-      try {
-        const app = document.querySelector('div#app');
-        if (!app) return false;
+    const pageData = await this.downloader._fetchPageData(url);
+    const subcategory = subcategoryOfRequiredFormat(pageData, url, expectedFormat);
 
-        const pageDataJson = app.getAttribute('data-page');
-        if (!pageDataJson) return false;
-
-        const pageData = JSON.parse(pageDataJson);
-        const components = pageData?.props?.subcategory?.components;
-        const subcategory = pageData?.props?.subcategory;
-
-        if (!Array.isArray(components) || components.length === 0) {
-          return false;
-        }
-
-        // Validate format matches expectation (with eCommerce special handling)
-        const isEcommerce = args.url.startsWith(args.ecommerceUrl);
-        const expectedMode = isEcommerce ? null : args.expectedFormat.mode;
-
-        // Check all snippets match the expected format
-        const allSnippetsValid = components.every(component => {
-          const snippet = component.snippet;
-          const frameworkMatch = snippet.name === args.expectedFormat.framework;
-          const versionMatch = snippet.version === args.expectedFormat.version;
-          const modeMatch = snippet.mode === expectedMode;
-
-          return frameworkMatch && versionMatch && modeMatch;
-        });
-
-        if (!allSnippetsValid) return false;
-
-        // Return just the subcategory object which contains everything we need
-        return subcategory;
-      } catch (error) {
-        return false; // JSON parse error or structure not ready
-      }
-    };
-
-    // 'domcontentloaded' (not 'load') avoids waiting for unneeded background assets (images, fonts, etc.)
-    await this.page.goto(url, { waitUntil: 'domcontentloaded' });
-
-    // Wait for the data and extract it directly from the returned objects
-    let subcategory;
-    try {
-      const dataHandle = await this.page.waitForFunction(snippetsOfRequiredFormat, {
-        url,
-        expectedFormat,
-        ecommerceUrl: CONFIG.urls.eCommerce
-      });
-
-      subcategory = await dataHandle.evaluate(data => data);
-    } catch (error) {
-      if (error.name === 'TimeoutError') {
-        throw new DownloaderError(`Timeout waiting for valid component data and format on ${url}`);
-      }
-      throw error;
-    }
-
-    // Data is now guaranteed to be available and in the correct format from wait function
+    // Data is now guaranteed to be available and in the correct format
     const components = subcategory.components;
     const category = subcategory.category;
     const product = subcategory.category.product;
@@ -1753,20 +1883,19 @@ class Worker {
 
   /**
    * Stops the worker and performs cleanup
-   * Stops tracing if enabled, closes browser context and pages, and resets state
+   * Stops tracing if enabled, closes the browser context and pages (unauthenticated mode
+   * only; authenticated workers hold no browser resources), and resets state
    */
   async stop() {
-    // Stop tracing if enabled
-    if (this.downloader.options.debugTrace) {
-      const traceLabel = this.downloader.options.unauthenticated
-        ? 'unauthenticated'
-        : this.downloader.currentFormat;
-      await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-${traceLabel}`);
-    }
+    if (this.context) {
+      // Stop tracing if enabled
+      if (this.downloader.options.debugTrace) {
+        await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-unauthenticated`);
+      }
 
-    if (this.page) {
       // This will close all pages in the context
       await this.context.close();
+      this.context = null;
       this.page = null;
     }
     this.state = 'stopped';
