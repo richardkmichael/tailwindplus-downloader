@@ -250,6 +250,11 @@ function createConfig() {
     // Lower the default timeout to notify sooner if actions are failing.
     timeout: 10000,
 
+    // Sub-resources aborted on the format-setting browser context.  All needed data is
+    // in the server-rendered data-page JSON, so these only add load on the live site.
+    // Stylesheets and scripts are kept: the page must hydrate to accept control clicks.
+    blockedResourceTypes: ['image', 'media', 'font'],
+
     retries: {
       maxRetries: 3
     },
@@ -436,6 +441,18 @@ class TailwindPlusDownloader {
 
     this.context = await this.browser.newContext(this.contextOptions);
     this.context.setDefaultTimeout(CONFIG.timeout);
+
+    // Authenticated mode never renders previews, so heavy sub-resources are aborted to
+    // reduce load on the live site.  Unauthenticated mode is left untouched: its
+    // extraction drives on-page controls and is kept exactly as validated.
+    if (!this.options.unauthenticated) {
+      await this.context.route('**/*', route => {
+        if (CONFIG.blockedResourceTypes.includes(route.request().resourceType())) {
+          return route.abort();
+        }
+        return route.continue();
+      });
+    }
 
     // Start tracing if enabled
     if (this.options.debugTrace) {
@@ -898,9 +915,9 @@ class TailwindPlusDownloader {
       throw new DownloaderError('No URLs available to detect current format');
     }
 
-    await this.mainPage.goto(this.urls[0]);
+    await this.mainPage.goto(this.urls[0], { waitUntil: 'domcontentloaded' });
 
-    // Wait for React to adjust the data as page resources load
+    // Wait for the server-rendered page data
     await this.mainPage.waitForFunction(() => {
       const app = document.querySelector('div#app');
       return app && app.getAttribute('data-page');
@@ -1067,7 +1084,7 @@ class TailwindPlusDownloader {
    */
   async _setFormat(targetFormat) {
     // Navigate to first page to access format controls
-    await this.mainPage.goto(this.urls[0]);
+    await this.mainPage.goto(this.urls[0], { waitUntil: 'domcontentloaded' });
 
     const app = this.mainPage.locator('div#app');
 
@@ -1173,10 +1190,20 @@ class TailwindPlusDownloader {
 
   async _showOneCodePanel() {
     const codeButton = this.mainPage.locator(CONFIG.selectors.codeButtons).first();
-    try {
-      await codeButton.click();
-    } catch (e) {
-      throw new DownloaderError(`Could not find a code button element. ${e.message}`);
+    const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
+
+    // After a domcontentloaded navigation the click can land before React has attached
+    // its handlers, in which case the code panel never opens; re-click until it does.
+    for (let attempt = 1; attempt <= CONFIG.retries.maxRetries; attempt++) {
+      try {
+        await codeButton.click();
+        await versionSelect.waitFor({ state: 'visible', timeout: 2000 });
+        return;
+      } catch (e) {
+        if (attempt === CONFIG.retries.maxRetries) {
+          throw new DownloaderError(`Could not reveal a code panel. ${e.message}`);
+        }
+      }
     }
   }
 
