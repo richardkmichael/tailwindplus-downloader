@@ -103,8 +103,6 @@ function parseArgs() {
   };
 }
 
-
-
 /**
  * Auto-discover component files
  */
@@ -248,18 +246,50 @@ function generateDiff(oldContent, newContent, outputFile, framework, safeName) {
 }
 
 /**
+ * Return a component's snippets array, or an empty array when it has none
+ */
+function getSnippets(component) {
+  if (component && Array.isArray(component.snippets)) {
+    return component.snippets;
+  }
+  return [];
+}
+
+/**
  * Find snippet code by version, framework, and mode from component's snippets array
  */
 function findSnippetCode(component, version, framework, mode = null) {
-  if (!component || !component.snippets || !Array.isArray(component.snippets)) {
-    return null;
-  }
-
-  const snippet = component.snippets.find(s =>
+  const snippet = getSnippets(component).find(s =>
     s.version === version && s.name === framework && s.mode === mode
   );
 
   return snippet ? snippet.code : null;
+}
+
+/**
+ * Walk the nested category > subcategory > group > component structure,
+ * invoking callback(componentData, { category, subcategory, group, component })
+ * for every leaf component.
+ */
+function forEachComponent(components, callback) {
+  for (const [category, categoryData] of Object.entries(components)) {
+    for (const [subcategory, subcategoryData] of Object.entries(categoryData)) {
+      for (const [group, groupData] of Object.entries(subcategoryData)) {
+        for (const [component, componentData] of Object.entries(groupData)) {
+          callback(componentData, { category, subcategory, group, component });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Sort modes with null first, then alphabetically
+ */
+function compareModes(a, b) {
+  if (a === null) return -1;
+  if (b === null) return 1;
+  return String(a).localeCompare(String(b));
 }
 
 /**
@@ -268,18 +298,12 @@ function findSnippetCode(component, version, framework, mode = null) {
 function getComponentPaths(components) {
   const paths = [];
 
-  for (const [category, categoryData] of Object.entries(components)) {
-    for (const [subcategory, subcategoryData] of Object.entries(categoryData)) {
-      for (const [group, groupData] of Object.entries(subcategoryData)) {
-        for (const [component, componentData] of Object.entries(groupData)) {
-          // Only include objects that have a snippets property
-          if (componentData && typeof componentData === 'object' && componentData.snippets) {
-            paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
-          }
-        }
-      }
+  forEachComponent(components, (componentData, { category, subcategory, group, component }) => {
+    // Only include objects that have a snippets property
+    if (componentData && typeof componentData === 'object' && componentData.snippets) {
+      paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
     }
-  }
+  });
 
   return paths.sort();
 }
@@ -327,29 +351,11 @@ function compareComponentNames(oldComponents, newComponents, options) {
 function collectModes(components) {
   const allModes = new Set();
 
-  function scanComponents(components) {
-    for (const category of Object.values(components)) {
-      for (const subcategory of Object.values(category)) {
-        for (const group of Object.values(subcategory)) {
-          for (const component of Object.values(group)) {
-            if (component && component.snippets && Array.isArray(component.snippets)) {
-              component.snippets.forEach(snippet => {
-                allModes.add(snippet.mode);
-              });
-            }
-          }
-        }
-      }
-    }
-  }
-
-  scanComponents(components);
-  return Array.from(allModes).sort((a, b) => {
-    // Sort with null first, then alphabetically
-    if (a === null) return -1;
-    if (b === null) return 1;
-    return String(a).localeCompare(String(b));
+  forEachComponent(components, (component) => {
+    getSnippets(component).forEach(snippet => allModes.add(snippet.mode));
   });
+
+  return Array.from(allModes).sort(compareModes);
 }
 
 /**
@@ -378,21 +384,13 @@ function getComparisons(options, oldComponents, newComponents) {
 
   // Scan through all components to find available versions
   function collectVersions(components) {
-    for (const category of Object.values(components)) {
-      for (const subcategory of Object.values(category)) {
-        for (const group of Object.values(subcategory)) {
-          for (const component of Object.values(group)) {
-            if (component && component.snippets && Array.isArray(component.snippets)) {
-              component.snippets.forEach(snippet => {
-                if (snippet.version) {
-                  allVersions.add(snippet.version);
-                }
-              });
-            }
-          }
+    forEachComponent(components, (component) => {
+      getSnippets(component).forEach(snippet => {
+        if (snippet.version) {
+          allVersions.add(snippet.version);
         }
-      }
-    }
+      });
+    });
   }
 
   collectVersions(oldComponents);
@@ -418,24 +416,24 @@ async function compareSnippetCombination(oldComponent, newComponent, comparison,
 
   // Skip if neither component has this combination
   if (!oldContent && !newContent) {
-    return state;
+    return;
   }
 
   const modeStr = mode === null ? '' : `.${mode}`;
 
   if (!oldContent || !newContent) {
-    state.headerPrinted = ensureHeaderPrinted(state.componentHeader, state.headerPrinted);
+    ensureHeaderPrinted(state);
     if (!oldContent) {
       console.log(`        Missing ${comparison.label}.${framework}${modeStr} in ${options.oldFile}`);
     } else {
       console.log(`        Missing ${comparison.label}.${framework}${modeStr} in ${options.newFile}`);
     }
     state.hasDifferences = true;
-    return state;
+    return;
   }
 
   if (oldContent !== newContent) {
-    state.headerPrinted = ensureHeaderPrinted(state.componentHeader, state.headerPrinted);
+    ensureHeaderPrinted(state);
     const modeStrFile = mode === null ? '' : `_${mode}`;
     const safeName = `${componentPath}_${comparison.label}_${framework}${modeStrFile}`
       .replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -447,29 +445,26 @@ async function compareSnippetCombination(oldComponent, newComponent, comparison,
     state.diffs++;
     state.hasDifferences = true;
   } else if (options.verbose) {
-    state.headerPrinted = ensureHeaderPrinted(state.componentHeader, state.headerPrinted);
+    ensureHeaderPrinted(state);
     console.log(`        No changes in ${comparison.label}.${framework}${modeStr}`);
   }
-
-  return state;
 }
 
 /**
- * Ensure component header is printed once
+ * Print the component header once, on the first difference found for it
  */
-function ensureHeaderPrinted(componentHeader, headerPrinted) {
-  if (!headerPrinted) {
-    console.log(componentHeader);
-    return true;
+function ensureHeaderPrinted(state) {
+  if (!state.headerPrinted) {
+    console.log(state.componentHeader);
+    state.headerPrinted = true;
   }
-  return headerPrinted;
 }
 
 /**
  * Compare a single component across versions, frameworks, and modes
  */
 async function compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader, availableModes) {
-  let state = {
+  const state = {
     diffs: 0,
     hasDifferences: false,
     headerPrinted: false,
@@ -481,7 +476,7 @@ async function compareComponent(oldComponent, newComponent, comparisons, compone
   for (const comparison of comparisons) {
     for (const framework of frameworks) {
       for (const mode of availableModes) {
-        state = await compareSnippetCombination(oldComponent, newComponent, comparison, framework, mode, componentPath, options, state);
+        await compareSnippetCombination(oldComponent, newComponent, comparison, framework, mode, componentPath, options, state);
       }
     }
   }
@@ -502,11 +497,7 @@ async function compareComponents(oldComponents, newComponents, options) {
   // Collect all available modes from both old and new components
   const oldModes = collectModes(oldComponents);
   const newModes = collectModes(newComponents);
-  const allModes = [...new Set([...oldModes, ...newModes])].sort((a, b) => {
-    if (a === null) return -1;
-    if (b === null) return 1;
-    return String(a).localeCompare(String(b));
-  });
+  const allModes = [...new Set([...oldModes, ...newModes])].sort(compareModes);
 
   console.log(`Available modes: ${allModes.map(m => m === null ? 'null' : m).join(', ')}\n`);
 
@@ -556,33 +547,25 @@ async function compareComponents(oldComponents, newComponents, options) {
  * Main execution
  */
 async function main() {
-  try {
-    const options = parseArgs();
-    discoverFiles(options);
+  const options = parseArgs();
+  discoverFiles(options);
 
-    const { oldData, newData, oldComponents, newComponents } = loadFiles(options);
+  const { oldData, newData, oldComponents, newComponents } = loadFiles(options);
 
-    if (options.namesOnly) {
-      // Names-only mode: compare component names without content comparison
-      compareComponentNames(oldComponents, newComponents, options);
-      return;
-    }
-
-    console.log(`Comparing:`);
-    console.log(`  Old: ${options.oldFile}`);
-    console.log(`  New: ${options.newFile}`);
-
-    getVersionInfo(oldData, newData);
-    ensureDiffDir();
-
-    await compareComponents(oldComponents, newComponents, options);
-  } catch (error) {
-    if (error.message.includes('Need at least 2 component files')) {
-      console.error(error.message);
-      process.exit(1);
-    }
-    throw error;
+  if (options.namesOnly) {
+    // Names-only mode: compare component names without content comparison
+    compareComponentNames(oldComponents, newComponents, options);
+    return;
   }
+
+  console.log(`Comparing:`);
+  console.log(`  Old: ${options.oldFile}`);
+  console.log(`  New: ${options.newFile}`);
+
+  getVersionInfo(oldData, newData);
+  ensureDiffDir();
+
+  await compareComponents(oldComponents, newComponents, options);
 }
 
 main().catch(console.error);
