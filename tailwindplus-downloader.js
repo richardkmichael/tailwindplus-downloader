@@ -40,6 +40,9 @@ const LogLevel = {
   ERROR: 4
 };
 
+// Conventional exit code for a process ended by SIGINT: 128 + the signal number.
+const INTERRUPT_EXIT_CODE = 130;
+
 class Logger {
   constructor(options = {}) {
     this.level = options.debug ? LogLevel.DEBUG : LogLevel.INFO;
@@ -498,6 +501,10 @@ class TailwindPlusDownloader {
     // simultaneous session expiries across workers triggers exactly one login.
     this.sessionGeneration = 0;
     this._reauthPromise = null;
+
+    // Set when an interrupt is received.  Workers stop taking jobs and the format loop stops
+    // advancing, so the run unwinds through its normal teardown instead of being killed.
+    this.interrupted = false;
   }
 
   _elapsedSecondsSinceStart() {
@@ -509,6 +516,8 @@ class TailwindPlusDownloader {
     // trace unfinalized and the log file unflushed.  Record the outcome, tear down, then exit.
     let succeeded = false;
     let exitCode = 0;
+
+    const stopListening = this._listenForInterrupt();
 
     try {
       await this._checkOutputExists();
@@ -531,13 +540,20 @@ class TailwindPlusDownloader {
       this._showStartMessage();
       await this._processFormats(formats);
 
-      if (this.options.outputFormat === 'dir') {
-        this._processResultsAndWriteDirectory();
+      // An interrupted run holds only the formats it got through, so writing would produce output
+      // that looks complete but is not.
+      if (this.interrupted) {
+        this.logger.warn('Interrupted before the download finished; no output written');
+        exitCode = INTERRUPT_EXIT_CODE;
       } else {
-        this._processResultsAndWriteOutput();
-      }
+        if (this.options.outputFormat === 'dir') {
+          this._processResultsAndWriteDirectory();
+        } else {
+          this._processResultsAndWriteOutput();
+        }
 
-      succeeded = true;
+        succeeded = true;
+      }
     } catch (error) {
       // Logged here rather than after teardown, which closes the logger.  An unexpected error is
       // recorded before rethrowing, so `--log` captures why the run died; the rethrow still
@@ -551,12 +567,45 @@ class TailwindPlusDownloader {
         throw error;
       }
     } finally {
+      stopListening();
       await this.stop({ completed: succeeded });
     }
 
     if (exitCode !== 0) {
       process.exit(exitCode);
     }
+  }
+
+  /**
+   * Handles an interrupt by asking the run to wind itself down, rather than tearing down from
+   * inside the signal handler.  Teardown from a handler would race the workers still driving the
+   * browser, and would then run a second time when `start()` reaches its `finally`.
+   *
+   * A second interrupt exits at once: the orderly path waits for in-flight work and restores the
+   * account format, and someone pressing Ctrl-C twice is asking not to wait for that.
+   *
+   * @returns {Function} Removes the listeners; call it once the run is unwinding
+   */
+  _listenForInterrupt() {
+    const onInterrupt = (signal) => {
+      if (this.interrupted) {
+        // No teardown here: the log may lose its tail, which is the cost of being asked to stop now.
+        this.logger.warn(`Received ${signal} again — exiting immediately`);
+        process.exit(INTERRUPT_EXIT_CODE);
+      }
+
+      this.interrupted = true;
+      this.logger.warn(`Received ${signal} — finishing in-flight work, then shutting down`);
+      this.logger.warn('Press again to exit immediately');
+    };
+
+    process.on('SIGINT', onInterrupt);
+    process.on('SIGTERM', onInterrupt);
+
+    return () => {
+      process.off('SIGINT', onInterrupt);
+      process.off('SIGTERM', onInterrupt);
+    };
   }
 
   /**
@@ -570,7 +619,14 @@ class TailwindPlusDownloader {
     this.logger.debug('Initializing browser');
 
     const playwrightConfiguration = {
-      headless: !this.options.debugHeaded
+      headless: !this.options.debugHeaded,
+
+      // Playwright closes the browser on these signals by default, which would tear it down
+      // underneath workers that are still using it.  The downloader handles the signal itself and
+      // closes the browser once the run has wound down.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false
     };
 
     // Set up tracing directory if tracing is enabled
@@ -1297,6 +1353,10 @@ class TailwindPlusDownloader {
         await Promise.all(workers.map(worker => worker.stop()));
 
         this.logger.info(`Downloaded format: ${format}`);
+
+        if (this.interrupted) {
+          break;
+        }
       }
     } finally {
       await this._restoreInitialFormat();
@@ -1684,7 +1744,8 @@ class TailwindPlusDownloader {
       this._showStopMessage();
     }
 
-    // Close main page if it exists.  As in `Worker.stop`, the browser may already be gone.
+    // Close main page if it exists.  As in `Worker.stop`, an interrupt may have taken the browser
+    // down already, and teardown must survive that.
     if (this.mainPage && !this.mainPage.isClosed()) {
       try {
         await this.mainPage.close();
@@ -1767,8 +1828,9 @@ class Worker {
       this.page = await this.context.newPage();
     }
 
-    // Job processing loop
-    while (this.downloader.jobQueue.length > 0) {
+    // Job processing loop.  An interrupt stops the worker taking new jobs; the job already in
+    // flight is allowed to finish so the browser is not torn down mid-navigation.
+    while (!this.downloader.interrupted && this.downloader.jobQueue.length > 0) {
       const job = this.downloader.jobQueue.shift();
       if (!job) break;
 
@@ -1964,6 +2026,13 @@ class Worker {
 
       // Iterate through format combinations
       for (const format of formatsToUse) {
+        // One unauthenticated job covers every format for a page, so waiting for it to finish
+        // makes an interrupt feel unresponsive.  Stop between formats instead; the partial data
+        // is discarded either way, since an interrupted run writes no output.
+        if (this.downloader.interrupted) {
+          return componentData;
+        }
+
         let responseBody = null;
 
         // Change framework if needed
@@ -2036,8 +2105,8 @@ class Worker {
         await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-unauthenticated`);
       }
 
-      // This will close all pages in the context.  The browser process may already be gone, and
-      // closing a dead context throws; teardown must survive that.
+      // This will close all pages in the context.  An interrupt delivered to the process group
+      // reaches the browser too, so the context may already be gone; teardown must not throw.
       try {
         await this.context.close();
       } catch (error) {

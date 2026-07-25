@@ -103,6 +103,76 @@ run_cmd() {
   fi
 }
 
+# Start the downloader in the background, wait until it logs `marker` so the signal lands while a
+# job is in flight, then interrupt it and check its exit code.
+#
+# `node` is backgrounded directly rather than through the `downloader` helper: backgrounding a
+# shell function gives the subshell's PID, and the signal would never reach node.  Every wait is
+# bounded, because a shutdown that hangs is exactly what this guards against.
+run_and_interrupt() {
+  local expected_exit="$1"
+  local marker="$2"
+  local logfile="$3"
+  shift 3
+
+  node "$ROOT_DIR/tailwindplus-downloader.js" "$@" "${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"}" > /dev/null 2>&1 &
+  local pid=$!
+
+  local waited=0
+  while ! grep -q "$marker" "$logfile" 2>/dev/null; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      fail "$_NAME  (exited before logging: $marker)"
+      return
+    fi
+    sleep 0.2
+    waited=$(( waited + 1 ))
+    if [[ "$waited" -gt 300 ]]; then
+      kill -INT "$pid" 2>/dev/null
+      fail "$_NAME  (marker never logged: $marker)"
+      return
+    fi
+  done
+
+  kill -INT "$pid"
+
+  waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 0.2
+    waited=$(( waited + 1 ))
+    if [[ "$waited" -gt 150 ]]; then
+      kill -KILL "$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      fail "$_NAME  (still running 30s after the interrupt)"
+      return
+    fi
+  done
+
+  wait "$pid"
+  local actual_exit=$?
+  if [[ "$actual_exit" -eq "$expected_exit" ]]; then
+    pass "$_NAME"
+  else
+    fail "$_NAME  (expected exit $expected_exit, got $actual_exit)"
+  fi
+}
+
+check_log_contains() {
+  local label="$1"
+  local path="$2"
+  local pattern="$3"
+
+  if [[ ! -f "$path" ]]; then
+    fail "$label  (no log file: $path)"
+    return
+  fi
+
+  if grep -q "$pattern" "$path"; then
+    pass "$label"
+  else
+    fail "$label  (not found in $path: $pattern)"
+  fi
+}
+
 check_file_exists() {
   local label="$1"
   local path="$2"
@@ -458,6 +528,22 @@ test_url_file_empty() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+test_interrupt_shuts_down() {
+  local dir="$RUN_DIR/16-interrupt"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  # Many URLs so the run cannot finish before the interrupt arrives.
+  run_and_interrupt 130 'Started job:' "$dir/output.log" \
+    --unauthenticated --debug-url-file="$MANY_URL_FILE" --output="$dir/output.json" --log --debug
+
+  check_log_contains "interrupt reported" "$dir/output.log" 'Received SIGINT'
+  check_log_contains "teardown reached" "$dir/output.log" 'Shutting down'
+  check_file_absent "no partial output written" "$dir/output.json"
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # ── Test registry and runner ─────────────────────────────────────────────────
 
 TESTS=(
@@ -476,6 +562,7 @@ TESTS=(
   "unauthenticated: page with no free components|test_unauth_no_free_components"
   "unauthenticated: dir output format|test_unauth_dir_output"
   "URL file with no URLs aborts|test_url_file_empty"
+  "interrupt shuts down cleanly|test_interrupt_shuts_down"
 )
 
 echo -e "${BOLD}=== TailwindPlus Downloader Smoke Tests ===${NC}"
