@@ -262,6 +262,18 @@ function parseDataPageFromHtml(html) {
 }
 
 /**
+ * Reports whether a URL is an eCommerce component page.  Those pages have no
+ * light/dark/system controls, so their snippets carry a null mode and are identical across
+ * the three mode passes of a framework/version.
+ *
+ * @param {string} url - Page URL
+ * @returns {boolean} True when the URL is an eCommerce component page
+ */
+function isEcommerceUrl(url) {
+  return url.startsWith(CONFIG.urls.eCommerce);
+}
+
+/**
  * Validates that every component in a page's data-page matches the expected format and
  * returns the subcategory object.  eCommerce components carry no mode, so mode is
  * compared as null for eCommerce URLs.
@@ -284,8 +296,7 @@ function subcategoryOfRequiredFormat(pageData, url, expectedFormat) {
     throw new DownloaderError(`No component data found on ${url}`);
   }
 
-  const isEcommerce = url.startsWith(CONFIG.urls.eCommerce);
-  const expectedMode = isEcommerce ? null : expectedFormat.mode;
+  const expectedMode = isEcommerceUrl(url) ? null : expectedFormat.mode;
 
   const allSnippetsValid = components.every(component => {
     const snippet = component.snippet;
@@ -497,11 +508,6 @@ class TailwindPlusDownloader {
 
       this._showStartMessage();
       await this._processFormats(formats);
-
-      // Clean up eCommerce components (skip in unauthenticated mode - no eCommerce components)
-      if (!this.options.unauthenticated && this.componentData.Ecommerce) {
-        this.componentData.Ecommerce = this._processEcommerceComponents(this.componentData.Ecommerce);
-      }
 
       if (this.options.outputFormat === 'dir') {
         this._processResultsAndWriteDirectory();
@@ -1189,6 +1195,9 @@ class TailwindPlusDownloader {
    * current format before the format may be changed.  Because the setting persists beyond the run,
    * the format the account started on is restored once the passes finish.
    *
+   * eCommerce pages are the exception: they have no mode controls and render identically in every
+   * mode, so they are queued once per framework/version rather than once per format.
+   *
    * In unauthenticated mode, workers handle all formats per-page in a single visit, since format
    * controls work per-component without authentication.
    *
@@ -1221,6 +1230,10 @@ class TailwindPlusDownloader {
       return;
     }
 
+    // eCommerce pages render the same content in every mode, so only the first mode pass of
+    // each framework/version needs them.  The remaining two passes skip those URLs entirely.
+    const eCommerceDownloadedFor = new Set();
+
     // Authenticated mode: iterate through formats, setting account-level format.  The format the
     // account started on is restored in a `finally`, so a pass that throws partway does not strand
     // the account on the format it stopped on.
@@ -1233,7 +1246,11 @@ class TailwindPlusDownloader {
 
         await this._setFormat(format);
 
-        this._populateJobQueue();
+        const frameworkVersion = `${format.framework}-v${format.version}`;
+        const includeEcommerce = !eCommerceDownloadedFor.has(frameworkVersion);
+        eCommerceDownloadedFor.add(frameworkVersion);
+
+        this._populateJobQueue({ includeEcommerce });
 
         // Run workers
         const workerPromises = workers.map(worker => worker.start());
@@ -1247,44 +1264,6 @@ class TailwindPlusDownloader {
     }
 
     this.logger.debug('All formats downloaded');
-  }
-
-  _processEcommerceComponents(data) {
-    this.logger.debug('De-duplicating eCommerce component snippets without `mode`');
-    const getSnippetKey = (snippet) => {
-      return `${snippet.name}|${snippet.version}|${snippet.supportsDarkMode}`;
-    };
-
-    const uniqueSnippets = (snippets) => {
-      const seen = new Map();
-      for (const snippet of snippets) {
-        const key = getSnippetKey(snippet);
-        if (!seen.has(key)) {
-          seen.set(key, snippet);
-        }
-      }
-      return Array.from(seen.values());
-    };
-
-    const deduplicateSnippets = (obj) => {
-      if (obj === null || typeof obj !== 'object') {
-        return;
-      }
-
-      // If the object is a component with a snippets array, de-duplicate
-      if (Array.isArray(obj.snippets)) {
-        obj.snippets = uniqueSnippets(obj.snippets);
-      } else {
-        // Otherwise, continue
-        for (const value of Object.values(obj)) {
-          deduplicateSnippets(value);
-        }
-      }
-    };
-
-    const dataCopy = structuredClone(data);
-    deduplicateSnippets(dataCopy);
-    return dataCopy;
   }
 
   /**
@@ -1441,13 +1420,30 @@ class TailwindPlusDownloader {
     }
   }
 
-  _populateJobQueue() {
+  /**
+   * Populates the job queue with one job per discovered URL.
+   *
+   * @param {Object} [options] - Queue population options
+   * @param {boolean} [options.includeEcommerce=true] - When false, drop eCommerce URLs from the
+   *   queue because this pass would re-download content already captured for the same
+   *   framework and version
+   */
+  _populateJobQueue({ includeEcommerce = true } = {}) {
     this.logger.debug('Populating job queue from discovered URLs');
 
     let urlsToProcess = [...this.urls];
 
     if (this.options.debugShortTest) {
       urlsToProcess = urlsToProcess.slice(0, 2);
+    }
+
+    if (!includeEcommerce) {
+      const nonEcommerceUrls = urlsToProcess.filter(url => !isEcommerceUrl(url));
+      const skippedCount = urlsToProcess.length - nonEcommerceUrls.length;
+      if (skippedCount > 0) {
+        this.logger.debug(`Skipping ${skippedCount} eCommerce URL(s) already downloaded for this framework and version`);
+      }
+      urlsToProcess = nonEcommerceUrls;
     }
 
     // Transform the list of URLs to a list of jobs
