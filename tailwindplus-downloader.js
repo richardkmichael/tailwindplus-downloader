@@ -1437,13 +1437,13 @@ class TailwindPlusDownloader {
       this._mergeComponentData(this.componentData, job.data);
 
     } else if (job.status === 'failed') {
-      this.logger.warn(`Job failed: ${job.url} - ${job.error}`);
+      // The worker that ran the job already reported the failure, under its own log prefix.
+      // Report only what is decided here: whether the job is retried.
 
       // Re-queue failed job as pending, for retry, if under maxRetries
       if (job.retryCount < CONFIG.retries.maxRetries) {
         job.retryCount++;
         job.status = 'pending';
-        delete job.error;
         this.jobQueue.push(job);
         this.logger.warn(`Retrying ${job.url} (attempt ${job.retryCount}/${CONFIG.retries.maxRetries})`);
       } else {
@@ -1664,8 +1664,7 @@ class Worker {
         if (error instanceof SessionError) {
           throw error;
         }
-        this.logger.warn(`Job failed: ${job.url}: ${error.message}`);
-        job.error = error.message;
+        this.logger.warn(`Job failed: ${job.url} - ${error.message}`);
         job.status = 'failed';
         this.downloader._processJobResult(job);
       }
