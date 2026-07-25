@@ -181,6 +181,15 @@ npx github:richardkmichael/tailwindplus-downloader#latest --unauthenticated
 Within the repo, or with a global install, short-form aliases are available:
 `npx twp-downloader`, `npx twp-diff`, `npx twp-create-skeleton`.
 
+## Limitations
+
+An eCommerce URL cannot be first in a URL file. The downloader reads the format controls from the
+first URL it visits, and eCommerce pages do not have them.
+
+Do not change the format in the TailwindPlus web UI while a download is running. The downloader sets
+the account format and verifies that pages come back in it, so a change made underneath the run
+fails jobs with a format mismatch.
+
 ## Diff
 
 Works with the JSON single file output to compare component versions between downloads. The diff
