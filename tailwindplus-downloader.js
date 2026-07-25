@@ -355,12 +355,6 @@ function subcategoryOfRequiredFormat(pageData, url, expectedFormat) {
 function createConfig() {
   const base = 'https://tailwindcss.com';
 
-  const components = 'nav ~ div > div > section[id^="component-"]';
-  const controlsRelative = 'div > :nth-child(2)';
-  const codePanelRelative = 'div > :nth-child(3)';
-  const componentControls = `${components} > ${controlsRelative}`;
-  const codePanel = `${components} > ${codePanelRelative}`;
-
   // Generate timestamp for both output filenames and JSON content
   const version = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace('T', '-');
   const outputBase = 'tailwindplus-components';
@@ -382,16 +376,6 @@ function createConfig() {
       // Sets the snippet format.  Unauthenticated it applies per component uuid, for the calling
       // session only; authenticated it sets the account-wide preference.
       language: `${base}/plus/ui-blocks/language`
-    },
-
-    selectors: {
-      // The `Code` buttons, the first one is clicked to reveal a version control.
-      codeButtons: `${componentControls} button:has-text("Code")`,
-
-      // The format controls, the script uses the first of each.
-      modeInput: `${componentControls} input[name^="theme-"]`,
-      frameworkSelect: `${componentControls} select`,
-      versionSelect: `${codePanel} select`,
     },
 
     // Lower the default timeout to notify sooner if actions are failing.
@@ -1204,28 +1188,6 @@ class TailwindPlusDownloader {
     }
   }
 
-  /**
-   * Reads the current format from the on-page form controls (framework, version, mode).
-   * Assumes the page is already loaded and a code panel is visible.
-   *
-   * @returns {Promise<Format>} Current format from the page controls
-   * @throws {DownloaderError} When required controls are not found
-   */
-  async _readCurrentFormat() {
-    const frameworkSelect = this.mainPage.locator(CONFIG.selectors.frameworkSelect).first();
-    const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
-    const currentModeInput = this.mainPage.locator(`${CONFIG.selectors.modeInput}:checked`).first();
-
-    const framework = await frameworkSelect.inputValue();
-    const version = parseInt(await versionSelect.inputValue(), 10);
-    const mode = await currentModeInput.inputValue();
-
-    if (!framework || isNaN(version) || !mode) {
-      throw new DownloaderError('Failed to get value for framework, version or mode - required controls not found');
-    }
-
-    return new Format(framework, version, mode);
-  }
 
   /**
    * Detects the current format/mode of TailwindPlus components (e.g., html-v3-system).
@@ -1240,18 +1202,23 @@ class TailwindPlusDownloader {
       throw new DownloaderError('No URLs available to detect current format');
     }
 
-    await this.mainPage.goto(this.urls[0], { waitUntil: 'domcontentloaded' });
+    // The rendered format is in the page data, so it is read rather than taken off the controls.
+    const probeUrl = this._formatProbeUrl();
+    const pageData = await this._fetchPageData(probeUrl);
+    const snippet = pageData.props?.subcategory?.components?.find(component => component.snippet)?.snippet;
+    if (!snippet) {
+      throw new DownloaderError(`No component data found on ${probeUrl}`);
+    }
 
-    // Wait for the server-rendered page data
-    await this.mainPage.waitForFunction(() => {
-      const app = document.querySelector('div#app');
-      return app && app.getAttribute('data-page');
-    });
+    // A mode-less page cannot show the account's mode, and a null mode would generate a fourth,
+    // invalid mode to download.  Fall back to the first configured mode.
+    let mode = snippet.mode;
+    if (mode === null) {
+      mode = CONFIG.download.modes[0];
+      this.logger.debug(`No mode on ${probeUrl}; assuming ${mode}`);
+    }
 
-    // Show a code panel to reveal a version control
-    await this._showOneCodePanel();
-
-    const detectedFormat = await this._readCurrentFormat();
+    const detectedFormat = new Format(snippet.name, snippet.version, mode);
     this.logger.debug(`Detected format: ${detectedFormat}`);
 
     return detectedFormat;
@@ -1388,108 +1355,55 @@ class TailwindPlusDownloader {
   }
 
   /**
-   * Sets the account format by changing UI controls and waiting for responses
-   * @param {Object} format - Target format with framework, version, and mode
+   * A URL to read the account format from and verify it against.
+   *
+   * eCommerce components carry no mode, so a page that has one is preferred.  A run filtered to
+   * eCommerce URLs alone has nowhere to read a mode from, and falls back to the first URL.
+   *
+   * @returns {string} URL to probe
+   */
+  _formatProbeUrl() {
+    return this.urls.find(url => !isEcommerceUrl(url)) || this.urls[0];
+  }
+
+  /**
+   * Sets the account-level format.
+   *
+   * The site takes the format directly, so no page is opened and no controls are driven.  This is
+   * why the run's URLs need not include one that carries format controls, and why an eCommerce URL
+   * may appear anywhere in a URL file.
+   *
+   * @param {Format} targetFormat - Target format
+   * @throws {DownloaderError} When the request is rejected, or the format did not persist
    */
   async _setFormat(targetFormat) {
-    // Navigate to first page to access format controls
-    await this.mainPage.goto(this.urls[0], { waitUntil: 'domcontentloaded' });
-
-    const app = this.mainPage.locator('div#app');
-
-    const pageDataJson = await app.getAttribute('data-page');
-    if (!pageDataJson) {
-      throw new DownloaderError(`No data-page attribute found on ${this.urls[0]}`);
-    }
-
-    // Expose the version control
-    await this._showOneCodePanel();
-
-    let currentFormat = await this._readCurrentFormat();
-    const { framework: targetFramework, version: targetVersion, mode: targetMode } = targetFormat;
-
-    // If the format is already the target format, just return.  Workers can start.
-    if (currentFormat.toString() === targetFormat.toString()) {
-      this.logger.debug(`Format is already: ${targetFormat}`);
-      return;
-    }
-
-    // Validate that every component in a response matches the given intermediate target format.
-    // Each control change (framework, then version, then mode) only reaches the final target one
-    // axis at a time, so the response must be matched against the intermediate target, not the
-    // final one.
-    const isTargetFormat = (target, { snippet: { name: framework, version, mode } }) =>
-      framework === target.framework && version === target.version && mode === target.mode;
-
-    const responseForTarget = (target) => {
-      return async (response) => {
-        if (response.request().method() !== 'GET' || response.status() !== 200) {
-          return false;
-        }
-        const contentType = response.headers()['content-type'];
-        if (!contentType || !contentType.includes('application/json')) {
-          return false;
-        }
-        try {
-          const data = await response.json();
-          const components = data.props?.subcategory?.components;
-          if (!Array.isArray(components) || components.length === 0) {
-            return false;
-          }
-          return components.every(c => isTargetFormat(target, c));
-        } catch (e) {
-          return false;
-        }
-      };
-    };
-
-    this.logger.debug(`Setting format: ${targetFormat}, current format: ${currentFormat}`);
+    this.logger.debug(`Setting format: ${targetFormat}`);
 
     try {
-      const frameworkSelect = this.mainPage.locator(CONFIG.selectors.frameworkSelect).first();
-      const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
-      const targetModeInput = this.mainPage.locator(`${CONFIG.selectors.modeInput}[value="${targetMode}"]`).first();
-
-      // Change one axis at a time: arm the response wait, trigger the control, then wait for the
-      // matching response before the next change. Sequential (not Promise.all) so each network
-      // response is handled before the next control is touched. Returns the new current format.
-      const changeAxis = async (target, triggerControl) => {
-        const responsePromise = this.mainPage.waitForResponse(responseForTarget(target));
-        await triggerControl();
-        await responsePromise;
-        return target;
-      };
-
-      if (currentFormat.framework !== targetFramework) {
-        this.logger.debug(`Changing framework: ${currentFormat.framework} -> ${targetFramework}`);
-        currentFormat = await changeAxis(
-          new Format(targetFramework, currentFormat.version, currentFormat.mode),
-          () => frameworkSelect.selectOption(targetFramework)
-        );
+      const state = await this.context.storageState();
+      const xsrfToken = state.cookies.find(cookie => cookie.name === 'XSRF-TOKEN');
+      if (!xsrfToken) {
+        throw new DownloaderError('no XSRF-TOKEN cookie');
       }
 
-      if (currentFormat.version !== targetVersion) {
-        this.logger.debug(`Changing version: ${currentFormat.version} -> ${targetVersion}`);
-        currentFormat = await changeAxis(
-          new Format(currentFormat.framework, targetVersion, currentFormat.mode),
-          // Version is converted to a string, which is required by selectOption
-          () => versionSelect.selectOption(String(targetVersion))
-        );
+      // The response redirects back to the page it was set from, which there is no reason to
+      // follow: the format is verified below with a request of our own.
+      const response = await this.requestContext.put(CONFIG.urls.language, {
+        headers: { 'x-xsrf-token': decodeURIComponent(xsrfToken.value) },
+        data: { snippet_lang: targetFormat.toString() },
+        maxRedirects: 0,
+        timeout: CONFIG.timeout
+      });
+
+      if (response.status() >= 400) {
+        throw new DownloaderError(`request rejected with HTTP ${response.status()}`);
       }
 
-      if (targetMode !== null && currentFormat.mode !== targetMode) {
-        this.logger.debug(`Changing mode: ${currentFormat.mode} -> ${targetMode}`);
-        currentFormat = await changeAxis(
-          new Format(currentFormat.framework, currentFormat.version, targetMode),
-          () => targetModeInput.click()
-        );
-      }
-
-      // Verify the format persisted server-side: a fresh GET must render every
-      // component in the target format.  Cheaper than a browser navigation, and checks
-      // the server's persisted state rather than the just-clicked on-page controls.
-      const verifyData = await this._fetchPageData(this.urls[0]);
-      subcategoryOfRequiredFormat(verifyData, this.urls[0], targetFormat);
+      // Verify it persisted server-side rather than trusting the response: a fresh GET must
+      // render every component in the target format.
+      const probeUrl = this._formatProbeUrl();
+      const verifyData = await this._fetchPageData(probeUrl);
+      subcategoryOfRequiredFormat(verifyData, probeUrl, targetFormat);
 
       this.logger.debug(`Set format: ${targetFormat}`);
     } catch (error) {
@@ -1522,24 +1436,6 @@ class TailwindPlusDownloader {
     }
   }
 
-  async _showOneCodePanel() {
-    const codeButton = this.mainPage.locator(CONFIG.selectors.codeButtons).first();
-    const versionSelect = this.mainPage.locator(CONFIG.selectors.versionSelect).first();
-
-    // After a domcontentloaded navigation the click can land before React has attached
-    // its handlers, in which case the code panel never opens; re-click until it does.
-    for (let attempt = 1; attempt <= CONFIG.retries.maxRetries; attempt++) {
-      try {
-        await codeButton.click();
-        await versionSelect.waitFor({ state: 'visible', timeout: 2000 });
-        return;
-      } catch (e) {
-        if (attempt === CONFIG.retries.maxRetries) {
-          throw new DownloaderError(`Could not reveal a code panel. ${e.message}`);
-        }
-      }
-    }
-  }
 
   /**
    * Populates the job queue with one job per discovered URL.
