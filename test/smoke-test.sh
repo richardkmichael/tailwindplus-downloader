@@ -259,6 +259,93 @@ check_descriptions() {
   fi
 }
 
+# Assert every captured component carries the full format set exactly once, with content.
+#
+# `expected` is the downloader's own cross-product from CONFIG.download -- 3 frameworks x 2
+# versions x 3 modes, or 6 where mode does not vary -- not a claim about what TailwindPlus
+# publishes.  Components may be added or removed upstream freely; what must hold is that whatever
+# was captured carries every format asked for, once each, with code.
+#
+# Distinctness is the part that matters: a stale read, a format change that did not apply, or a
+# skipped axis all leave the snippet count intact while duplicating a format.
+check_snippet_formats() {
+  local label="$1"
+  local path="$2"
+  local expected="$3"
+
+  if [[ ! -f "$path" ]]; then
+    fail "$label  (no output file: $path)"
+    return
+  fi
+
+  local result
+  # shellcheck disable=SC2016 # ${...} below are JS template literals, not shell expansions.
+  result=$(node -e '
+    const fs = require("fs");
+    const expected = Number(process.argv[2]);
+    const tree = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).tailwindplus || {};
+    const problems = [];
+    let checked = 0;
+
+    const walk = (node, path) => {
+      if (!node || typeof node !== "object") { return; }
+      if (Array.isArray(node.snippets)) {
+        checked++;
+        const formats = node.snippets.map(s => `${s.name}-v${s.version}-${s.mode}`);
+        const distinct = new Set(formats);
+        if (formats.length !== expected) {
+          problems.push(`${path}: ${formats.length} snippets, expected ${expected}`);
+        } else if (distinct.size !== expected) {
+          problems.push(`${path}: only ${distinct.size} distinct formats in ${formats.length} snippets`);
+        }
+        const empty = node.snippets.filter(s => !s.code).length;
+        if (empty > 0) { problems.push(`${path}: ${empty} snippet(s) with no code`); }
+        return;
+      }
+      for (const key of Object.keys(node)) { walk(node[key], path ? `${path}.${key}` : key); }
+    };
+
+    walk(tree, "");
+    if (checked === 0) { problems.push("no components found"); }
+    console.log(problems.length > 0 ? problems.join("; ") : `OK ${checked}`);
+  ' "$path" "$expected" 2>&1)
+
+  if [[ "$result" == "OK "* ]]; then
+    pass "$label  (${result#OK } component(s) x $expected formats)"
+  else
+    fail "$label  ($result)"
+  fi
+}
+
+# Assert each component directory in dir output holds one file per format.  The directory layout
+# carries no snippet metadata, so the count is what can be checked there.
+check_snippet_file_count() {
+  local label="$1"
+  local dir="$2"
+  local expected="$3"
+
+  local problems=""
+  local checked=0
+
+  while IFS= read -r componentDir; do
+    [[ -z "$componentDir" ]] && continue
+    checked=$(( checked + 1 ))
+    local count
+    count=$(find "$componentDir" -type f | wc -l | tr -d ' ')
+    if [[ "$count" -ne "$expected" ]]; then
+      problems="$problems ${componentDir##*/}=$count"
+    fi
+  done < <(find "$dir" -type d -name 'v*' -exec dirname {} \; 2>/dev/null | sort -u)
+
+  if [[ "$checked" -eq 0 ]]; then
+    fail "$label  (no component directories under $dir)"
+  elif [[ -n "$problems" ]]; then
+    fail "$label  (expected $expected files each, got:$problems)"
+  else
+    pass "$label  ($checked component(s) x $expected files)"
+  fi
+}
+
 # Assert the directory output contains snippet filenames with no `-<mode>` suffix.  Only
 # components with a null mode produce these, so it confirms the mode-less path ran end to end.
 check_modeless_filenames() {
@@ -482,6 +569,8 @@ test_unauth_no_credentials() {
   check_file_absent "no session file written" "$dir/$DEFAULT_SESSION"
   check_component_count "free components captured" "$dir/output.json" min 1
   check_descriptions "descriptions captured" "$dir/output.json"
+  # A moded page: 3 frameworks x 2 versions x 3 modes.
+  check_snippet_formats "every format captured once" "$dir/output.json" 18
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
@@ -511,6 +600,8 @@ test_unauth_dir_output() {
   check_file_exists "descriptions.json written" "$dir/output/descriptions.json"
   check_component_count "multiple free components captured" "$dir/output/metadata.json" min 2
   check_modeless_filenames "mode-less snippet filenames" "$dir/output"
+  # A mode-less page: 3 frameworks x 2 versions, with no mode to vary.
+  check_snippet_file_count "every format written once" "$dir/output" 6
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
