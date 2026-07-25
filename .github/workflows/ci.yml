@@ -5,6 +5,9 @@
 # no credentials are stored in this repository.  The login-dependent tests skip
 # themselves when no session or credentials file is present.
 #
+# Reads are plain HTTP, so no browser is installed: only the login form needs one,
+# and nothing that runs without credentials reaches it.
+#
 # Because each run costs real requests against a third-party site, runs are
 # limited to pull requests and pushes to the default branch, superseded runs are
 # cancelled, and the suite executes on a single Node version.
@@ -53,15 +56,8 @@ jobs:
           node-version: '22'
           cache: npm
 
-      # Restore before `npm ci`, so the postinstall `playwright install` finds the
-      # browser already present and skips a ~95 MB download.
-      - name: Cache Playwright browsers
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: playwright-${{ runner.os }}-
-
-      - run: npm ci
+      # Only the login form needs a browser, and none of the tests that run without credentials
+      # reach it, so the postinstall browser download is skipped entirely.
+      - run: npm ci --ignore-scripts
 
       - run: npm test

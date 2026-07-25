@@ -384,7 +384,6 @@ function createConfig() {
     // Sub-resources aborted on the format-setting browser context.  All needed data is
     // in the server-rendered data-page JSON, so these only add load on the live site.
     // Stylesheets and scripts are kept: the page must hydrate to accept control clicks.
-    blockedResourceTypes: ['image', 'media', 'font'],
 
     retries: {
       maxRetries: 3
@@ -474,8 +473,13 @@ class TailwindPlusDownloader {
     this.baseLogger = baseLogger;
     this.browser = null;
     this.context = null;
-    this.contextOptions = null;
     this.mainPage = null;
+
+    // The HTTP client used for every read.  Replaced on login, since a client's cookie jar
+    // cannot be written to; replaced clients are retired here and disposed at teardown, because
+    // a worker may still be mid-request on one.
+    this.requestContext = null;
+    this.retiredRequestContexts = [];
     this.credentials = this.options.credentials;
     this.session = this.options.session;
 
@@ -527,7 +531,7 @@ class TailwindPlusDownloader {
 
     try {
       await this._checkOutputExists();
-      await this._initializeBrowser();
+      await this._initializeSession();
 
       const discovery = await this._discoverUrls();
       this.urls = discovery.urls;
@@ -621,20 +625,7 @@ class TailwindPlusDownloader {
    *
    * @throws {Error} When browser launch fails or session loading fails
    */
-  async _initializeBrowser() {
-    this.logger.debug('Initializing browser');
-
-    const playwrightConfiguration = {
-      headless: !this.options.debugHeaded,
-
-      // Playwright closes the browser on these signals by default, which would tear it down
-      // underneath workers that are still using it.  The downloader handles the signal itself and
-      // closes the browser once the run has wound down.
-      handleSIGINT: false,
-      handleSIGTERM: false,
-      handleSIGHUP: false
-    };
-
+  async _initializeSession() {
     // Set up tracing directory if tracing is enabled
     if (this.options.debugTrace) {
       const extension = path.extname(this.options.output);
@@ -646,81 +637,94 @@ class TailwindPlusDownloader {
       this.logger.debug(`Tracing enabled, traces will be saved to: ${this.tracesDir}`);
     }
 
-    this.browser = await chromium.launch(playwrightConfiguration);
+    await this._openRequestContext();
 
-    // Load saved session if it exists (skip for unauthenticated mode)
-    this.contextOptions = {};
-    if (!this.options.unauthenticated && fs.existsSync(this.session)) {
-      this.contextOptions.storageState = this.session;
-      this.logger.debug('Loading saved session');
-    }
-
-    this.context = await this.browser.newContext(this.contextOptions);
-    this.context.setDefaultTimeout(CONFIG.timeout);
-
-    // Plain HTTP requests that share this context's cookies (kept in sync live, so a
-    // fresh login is picked up automatically).  Used for all authenticated page reads.
-    this.requestContext = this.context.request;
-
-    // Authenticated mode never renders previews, so heavy sub-resources are aborted to
-    // reduce load on the live site.  Unauthenticated mode is left untouched: its
-    // extraction drives on-page controls and is kept exactly as validated.
-    if (!this.options.unauthenticated) {
-      await this.context.route('**/*', route => {
-        if (CONFIG.blockedResourceTypes.includes(route.request().resourceType())) {
-          return route.abort();
-        }
-        return route.continue();
-      });
-    }
-
-    // Start tracing if enabled
-    if (this.options.debugTrace) {
-      await startTracing(this.context, 'main', 'Main Downloader');
-    }
-
-    this.mainPage = await this.context.newPage();
-
-    // Skip authentication for unauthenticated mode
     if (this.options.unauthenticated) {
       this.logger.debug('Unauthenticated mode - skipping login');
       return;
     }
 
-    // Validate session and authenticate if needed
-    const isAuthenticated = await this._validateSession();
-
-    if (!isAuthenticated) {
-      this.logger.debug('Authentication required');
-      await this._login();
-    } else {
+    if (await this._validateSession()) {
       this.logger.debug('Using existing valid session');
+      return;
     }
+
+    this.logger.debug('Authentication required');
+    await this._login();
   }
 
   /**
-   * Attempts page navigation with retries, converting TimeoutError to DownloaderError
+   * Opens the HTTP client, carrying the saved session's cookies when there is one.
    *
-   * @param {Page} page - Playwright page instance
-   * @param {string} url - URL to navigate to
-   * @throws {DownloaderError} When navigation fails after all retries due to timeouts
+   * Replacing the client is the only way to give it a new session, since its cookie jar cannot be
+   * written to directly, so a fresh login opens another one.  The previous client is retired
+   * rather than disposed: a worker may still be mid-request on it, and disposing would abort that.
    */
-  async _retryGoto(page, url) {
-    for (let attempt = 1; attempt <= CONFIG.retries.maxRetries; attempt++) {
+  async _openRequestContext() {
+    const contextOptions = {};
+    if (!this.options.unauthenticated && fs.existsSync(this.session)) {
+      contextOptions.storageState = this.session;
+      this.logger.debug('Loading saved session');
+    }
+
+    if (this.requestContext) {
+      this.retiredRequestContexts.push(this.requestContext);
+    }
+
+    this.requestContext = await request.newContext(contextOptions);
+  }
+
+  /**
+   * Launches a browser for the login form, which is the only part of a run that needs one.
+   *
+   * @throws {Error} When the browser cannot be launched
+   */
+  async _launchBrowser() {
+    this.logger.debug('Launching browser to log in');
+
+    this.browser = await chromium.launch({
+      headless: !this.options.debugHeaded,
+
+      // Playwright closes the browser on these signals by default, which would tear it down
+      // underneath the login flow.  The downloader handles the signal itself and winds the run
+      // down in order.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false
+    });
+
+    const contextOptions = fs.existsSync(this.session) ? { storageState: this.session } : {};
+    this.context = await this.browser.newContext(contextOptions);
+    this.context.setDefaultTimeout(CONFIG.timeout);
+
+    if (this.options.debugTrace) {
+      await startTracing(this.context, 'main', 'Main Downloader');
+    }
+
+    this.mainPage = await this.context.newPage();
+  }
+
+  /**
+   * Closes the browser opened for login, tolerating one that has already gone.
+   */
+  async _closeBrowser() {
+    if (this.options.debugTrace && this.context) {
+      await stopTracing(this.context, this.tracesDir, 'main');
+    }
+
+    if (this.browser) {
       try {
-        await page.goto(url);
-        return;
+        await this.browser.close();
       } catch (error) {
-        if (error.name !== 'TimeoutError') {
-          throw error;
-        }
-        if (attempt === CONFIG.retries.maxRetries) {
-          throw new DownloaderError(`Navigation to ${url} failed after ${CONFIG.retries.maxRetries} attempts due to known intermittent Playwright issue. Please re-run.`);
-        }
-        this.logger.warn(`Navigation timeout (attempt ${attempt}/${CONFIG.retries.maxRetries}): ${url}`);
+        this.logger.debug(`Browser already closed: ${error.message}`);
       }
     }
+
+    this.browser = null;
+    this.context = null;
+    this.mainPage = null;
   }
+
 
   /**
    * Validates whether the current session is authenticated with TailwindPlus.
@@ -734,19 +738,15 @@ class TailwindPlusDownloader {
    */
   async _validateSession() {
     this.logger.debug('Validating session');
-    await this._retryGoto(this.mainPage, CONFIG.urls.plus);
 
-    const isAuthenticated = await this.mainPage.evaluate(() => {
-      const app = document.querySelector('div#app');
-      if (!app) return false;
-      try {
-        const pageData = JSON.parse(app.getAttribute('data-page') || '{}');
-        return !!pageData?.props?.auth?.user;
-      } catch {
-        return false;
-      }
-    });
+    const response = await this.requestContext.get(CONFIG.urls.plus, { timeout: CONFIG.timeout });
 
+    // An expired session redirects to the login page, which carries no authenticated user.
+    const pageData = response.url().includes('/login')
+      ? null
+      : parseDataPageFromHtml(await response.text());
+
+    const isAuthenticated = Boolean(pageData?.props?.auth?.user);
     this.logger.debug(`Session validation result: ${isAuthenticated ? 'valid' : 'invalid'}`);
 
     return isAuthenticated;
@@ -767,43 +767,52 @@ class TailwindPlusDownloader {
     // Mutable, since it could be invalid (if a typo) and re-prompted during flow.
     let credentials = await this._obtainCredentials();
 
-    while (true) {
-      // Reload the login page in the loop to clear any incorrect credentials errors
-      await this.mainPage.goto(CONFIG.urls.login);
+    // The form is the one thing a request cannot do, so a browser is opened just for it and
+    // closed again as soon as the session has been captured.
+    await this._launchBrowser();
 
-      const result = await this._resilientLogin({
-        page: this.mainPage,
-        email: credentials.email,
-        password: credentials.password,
-        successUrl: CONFIG.urls.plus
-      });
+    try {
+      while (true) {
+        // Reload the login page in the loop to clear any incorrect credentials errors
+        await this.mainPage.goto(CONFIG.urls.login);
 
-      if (result === 'success') {
-        break;
+        const result = await this._resilientLogin({
+          page: this.mainPage,
+          email: credentials.email,
+          password: credentials.password,
+          successUrl: CONFIG.urls.plus
+        });
+
+        if (result === 'success') {
+          break;
+        }
+
+        if (result === 'bad_credentials') {
+          this.logger.error('Login failed, bad credentials.');
+
+          if (!process.stdin.isTTY) {
+            throw new DownloaderError('Login failed: bad credentials. Cannot prompt for new credentials in non-interactive mode.');
+          }
+          const answer = (await read({ prompt: 'Try again with new credentials? [Y/n]: ' })).toLowerCase();
+          if (answer === 'n' || answer === 'no') {
+            throw new DownloaderError('User aborted after failed login attempt.');
+          }
+          credentials = await this._promptCredentials();
+        }
       }
 
-      if (result === 'bad_credentials') {
-        this.logger.error('Login failed, bad credentials.');
+      this.logger.debug('Login successful');
 
-        if (!process.stdin.isTTY) {
-          throw new DownloaderError('Login failed: bad credentials. Cannot prompt for new credentials in non-interactive mode.');
-        }
-        const answer = (await read({ prompt: 'Try again with new credentials? [Y/n]: ' })).toLowerCase();
-        if (answer === 'n' || answer === 'no') {
-          throw new DownloaderError('User aborted after failed login attempt.');
-        }
-        credentials = await this._promptCredentials();
-      }
+      // Written to a file rather than kept in memory: it is the same path a later run reads, and
+      // it is what the HTTP client is reopened from below.
+      await this.context.storageState({ path: this.session });
+      this.logger.debug(`Session saved to ${this.session}`);
+    } finally {
+      await this._closeBrowser();
     }
 
-    this.logger.debug('Login successful');
-
-    // Save the session to a file, then use the file path in contextOptions (passed to Workers).
-    // Using the file path is consistent with the pre-existing session path, and avoids any
-    // issue with in-memory storageState objects not being correctly applied to new contexts.
-    await this.context.storageState({ path: this.session });
-    this.logger.debug(`Session saved to ${this.session}`);
-    this.contextOptions.storageState = this.session;
+    // The cookies just written are not in the current client's jar, so open one that has them.
+    await this._openRequestContext();
 
     // Only save if credentials came from user input (never when silently re-authenticating)
     if (offerSave && credentials.source === 'prompt') {
@@ -1030,42 +1039,16 @@ class TailwindPlusDownloader {
 
     const debugUrlFilter = this._initializeDebugFilter();
 
-    // Custom wait function that waits specifically for the required product data
-    const productsOfValidStructure = () => {
-      try {
-        const app = document.querySelector('div#app');
-        if (!app) return false;
+    // The product list is server-rendered into the page, so it is read rather than waited for.
+    const response = await this.requestContext.get(url, { timeout: CONFIG.timeout });
+    if (!response.ok()) {
+      throw new DownloaderError(`Request to ${url} failed with HTTP ${response.status()}`);
+    }
 
-        const pageDataJson = app.getAttribute('data-page');
-        if (!pageDataJson) return false;
-
-        const pageData = JSON.parse(pageDataJson);
-        const products = pageData?.props?.products;
-
-        if (!Array.isArray(products) || products.length === 0) {
-          return false;
-        }
-
-        // Return only what we actually need
-        return products;
-      } catch (error) {
-        return false; // JSON parse error or structure not ready
-      }
-    };
-
-    // Use domcontentloaded to avoid waiting for background assets
-    await this.mainPage.goto(url, { waitUntil: 'domcontentloaded' });
-
-    // Wait for the product data and extract it directly
-    let products;
-    try {
-      const dataHandle = await this.mainPage.waitForFunction(productsOfValidStructure);
-      products = await dataHandle.evaluate(data => data);
-    } catch (error) {
-      if (error.name === 'TimeoutError') {
-        throw new DownloaderError(`Timeout waiting for valid product data on ${url}`);
-      }
-      throw error;
+    const pageData = parseDataPageFromHtml(await response.text());
+    const products = pageData?.props?.products;
+    if (!Array.isArray(products) || products.length === 0) {
+      throw new DownloaderError(`No product data found on ${url}`);
     }
 
     // Product descriptions exist only here, on the discovery page; the component pages
@@ -1296,7 +1279,7 @@ class TailwindPlusDownloader {
 
     this.logger.debug(`Creating ${numberOfWorkers} workers`);
     for (let i = 0; i < numberOfWorkers; i++) {
-      const worker = new Worker(i + 1, this.browser, this.contextOptions, this, this.baseLogger);
+      const worker = new Worker(i + 1, this, this.baseLogger);
       workers.push(worker);
     }
 
@@ -1380,7 +1363,9 @@ class TailwindPlusDownloader {
     this.logger.debug(`Setting format: ${targetFormat}`);
 
     try {
-      const state = await this.context.storageState();
+      // From the HTTP client's own jar: it is what issues the request, and there may be no
+      // browser context at all.
+      const state = await this.requestContext.storageState();
       const xsrfToken = state.cookies.find(cookie => cookie.name === 'XSRF-TOKEN');
       if (!xsrfToken) {
         throw new DownloaderError('no XSRF-TOKEN cookie');
@@ -1664,28 +1649,24 @@ class TailwindPlusDownloader {
       this._showStopMessage();
     }
 
-    // Close main page if it exists.  As in `Worker.stop`, an interrupt may have taken the browser
-    // down already, and teardown must survive that.
-    if (this.mainPage && !this.mainPage.isClosed()) {
-      try {
-        await this.mainPage.close();
-      } catch (error) {
-        this.logger.debug(`Main page already closed: ${error.message}`);
-      }
-    }
-
-    // Stop tracing if enabled.  A run that failed before the browser was created has no context.
-    if (this.options.debugTrace && this.context) {
-      await stopTracing(this.context, this.tracesDir, 'main');
-    }
-
+    // A browser is normally closed as soon as login finishes, so one is open here only if the run
+    // ended during login.
     if (this.browser) {
+      await this._closeBrowser();
+    }
+
+    for (const context of [...this.retiredRequestContexts, this.requestContext]) {
+      if (!context) {
+        continue;
+      }
       try {
-        await this.browser.close();
+        await context.dispose();
       } catch (error) {
-        this.logger.debug(`Browser already closed: ${error.message}`);
+        this.logger.debug(`Request context already disposed: ${error.message}`);
       }
     }
+    this.retiredRequestContexts = [];
+    this.requestContext = null;
 
     await this.baseLogger.close();
   }
@@ -1698,10 +1679,8 @@ class TailwindPlusDownloader {
 // ===================================================================================
 
 class Worker {
-  constructor(id, browser, contextOptions, downloader, logger) {
+  constructor(id, downloader, logger) {
     this.id = id;
-    this.browser = browser;
-    this.contextOptions = contextOptions;
     this.context = null;
     this.downloader = downloader;
     this.page = null;
