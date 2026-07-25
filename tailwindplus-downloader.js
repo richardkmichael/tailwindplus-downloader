@@ -539,12 +539,15 @@ class TailwindPlusDownloader {
 
       succeeded = true;
     } catch (error) {
+      // Logged here rather than after teardown, which closes the logger.  An unexpected error is
+      // recorded before rethrowing, so `--log` captures why the run died; the rethrow still
+      // reaches the top-level handler, which reports it on the console and sets the exit code.
       if (error instanceof DownloaderError) {
-        // Logged here rather than after teardown, which closes the logger.
         this.logger.error(error.message);
         this.logger.error('Exiting');
         exitCode = 1;
       } else {
+        this.logger.error(`Unexpected error: ${error.stack || error.message}`);
         throw error;
       }
     } finally {
