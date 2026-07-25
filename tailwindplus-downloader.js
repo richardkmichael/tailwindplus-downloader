@@ -445,6 +445,11 @@ class TailwindPlusDownloader {
     this.componentData = {};
     this.componentCount = 0;
 
+    // Human-authored prose TailwindPlus ships alongside the components.  Kept beside the
+    // component tree rather than on its nodes, so the tree stays a pure name-keyed tree.
+    // Subcategories are keyed by the dotted "product.category.subcategory" path.
+    this.descriptions = { products: {}, subcategories: {} };
+
     // Components actually downloaded, which is fewer than the discovered
     // `componentCount` in unauthenticated mode: only free samples are reachable.
     // Set when the output metadata is built.
@@ -958,6 +963,15 @@ class TailwindPlusDownloader {
       throw error;
     }
 
+    // Product descriptions exist only here, on the discovery page; the component pages
+    // carry a product object with just a name and URL.
+    for (const product of products) {
+      this.descriptions.products[product.name] = {
+        description: product.description,
+        pricing_description: product.pricing_description
+      };
+    }
+
     // Extract URLs from page data
     const subcategories = products.flatMap(p => p.categories?.flatMap(c => c.subcategories || []) || []);
 
@@ -1409,6 +1423,26 @@ class TailwindPlusDownloader {
     this.logger.debug(`Populated job queue with ${this.jobQueue.length} jobs for current format`);
   }
 
+  /**
+   * Records a subcategory's prose, keyed by its dotted "product.category.subcategory" path.
+   *
+   * Called by workers as they extract each page.  The prose does not vary with the snippet
+   * format, so every format pass over a page records the same values: writes are idempotent
+   * and last-writer-wins is correct.  A single synchronous assignment also means concurrent
+   * workers cannot interleave a partial write.
+   *
+   * @param {string} product - Product name, e.g. "Marketing"
+   * @param {string} category - Category name, e.g. "Page Sections"
+   * @param {Object} subcategory - Subcategory object from the page data (`name`, `description`, `introduction`)
+   */
+  _recordSubcategoryDescription(product, category, subcategory) {
+    const subcategoryPath = `${product}.${category}.${subcategory.name}`;
+    this.descriptions.subcategories[subcategoryPath] = {
+      description: subcategory.description,
+      introduction: subcategory.introduction
+    };
+  }
+
   _mergeComponentData(target, source) {
     for (const [key, value] of Object.entries(source)) {
       if (value && typeof value === 'object') {
@@ -1489,6 +1523,7 @@ class TailwindPlusDownloader {
 
     const outputData = {
       ...metadata,
+      descriptions: this.descriptions,
       tailwindplus: this.componentData
     };
 
@@ -1507,6 +1542,7 @@ class TailwindPlusDownloader {
 
     this._writeComponentFiles(outputDir, this.componentData, []);
     fs.writeFileSync(path.join(outputDir, 'metadata.json'), JSON.stringify(metadata, sortedObjects, 2));
+    fs.writeFileSync(path.join(outputDir, 'descriptions.json'), JSON.stringify(this.descriptions, sortedObjects, 2));
   }
 
   _writeComponentFiles(outputDir, data, pathParts) {
@@ -1714,6 +1750,8 @@ class Worker {
     const category = subcategory.category;
     const product = subcategory.category.product;
 
+    this.downloader._recordSubcategoryDescription(product.name, category.name, subcategory);
+
     const componentData = {};
     componentData[product.name] = {};
     componentData[product.name][category.name] = {};
@@ -1776,13 +1814,17 @@ class Worker {
         product: subcategory.category.product.name,
         category: subcategory.category.name,
         subcategory: subcategory.name,
+        description: subcategory.description,
+        introduction: subcategory.introduction,
         downloadableComponents: data.props.subcategory.components
           .filter(c => c.downloadable && c.preview === 'light')
           .map(c => ({ uuid: c.uuid, name: c.name, initialSnippet: c.snippet }))
       };
     });
 
-    const { product, category, subcategory, downloadableComponents } = pageInfo;
+    const { product, category, subcategory, description, introduction, downloadableComponents } = pageInfo;
+
+    this.downloader._recordSubcategoryDescription(product, category, { name: subcategory, description, introduction });
 
     if (downloadableComponents.length === 0) {
       this.logger.debug(`No downloadable components on ${url}`);

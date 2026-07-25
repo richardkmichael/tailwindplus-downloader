@@ -228,6 +228,20 @@ The downloader produces a JSON file with this structure:
   "component_count": 33,
   "download_duration": "27.2s",
   "downloader_version": "2.0.0",
+  "descriptions": {
+    "products": {
+      "Marketing": {
+        "description": "Heroes, feature sections, newsletter sign up forms — ...",
+        "pricing_description": "Heroes, feature sections, newsletter sign up forms — ..."
+      }
+    },
+    "subcategories": {
+      "Marketing.Page Sections.Hero Sections": {
+        "description": "Hero section examples for Tailwind CSS, designed and built ...",
+        "introduction": "Use these Tailwind CSS hero section examples to add ..."
+      }
+    }
+  },
   "tailwindplus": {
     "Marketing": {
       "Page Sections": {
@@ -280,11 +294,17 @@ The downloader produces a JSON file with this structure:
 }
 ```
 
+The `descriptions` section holds the prose TailwindPlus publishes for each product and
+subcategory.  It sits beside the component tree rather than on its nodes, so the tree stays a
+plain name-keyed hierarchy.  Subcategory keys are the dotted `product.category.subcategory` path
+into that tree.  Categories and components have no descriptions upstream.
+
 ### Directory output
 
 ```
 tailwindplus-components-[TIMESTAMP]/
 ├── metadata.json
+├── descriptions.json
 └── Marketing/
     └── Page Sections/
         └── Hero Sections/
