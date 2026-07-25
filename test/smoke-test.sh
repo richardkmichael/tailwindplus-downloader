@@ -78,6 +78,13 @@ run_cmd() {
   local expected_exit="$1"
   local notty="$2"
   shift 2
+
+  # Restore errexit to whatever it was, rather than switching it on: the tests
+  # expect non-zero exits, and each test function ends in a conditional whose
+  # false branch would otherwise abort the whole run.
+  local errexit_was_set=false
+  [[ $- == *e* ]] && errexit_was_set=true
+
   set +o errexit
   if [[ "$notty" = "notty" ]]; then
     "$@" < /dev/null 2>&1
@@ -85,7 +92,7 @@ run_cmd() {
     "$@" 2>&1
   fi
   local actual_exit=$?
-  set -o errexit
+  if $errexit_was_set; then set -o errexit; fi
   if [[ "$actual_exit" -eq "$expected_exit" ]]; then
     pass "$_NAME"
   else
