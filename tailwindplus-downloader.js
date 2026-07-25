@@ -1684,9 +1684,13 @@ class TailwindPlusDownloader {
       this._showStopMessage();
     }
 
-    // Close main page if it exists
+    // Close main page if it exists.  As in `Worker.stop`, the browser may already be gone.
     if (this.mainPage && !this.mainPage.isClosed()) {
-      await this.mainPage.close();
+      try {
+        await this.mainPage.close();
+      } catch (error) {
+        this.logger.debug(`Main page already closed: ${error.message}`);
+      }
     }
 
     // Stop tracing if enabled.  A run that failed before the browser was created has no context.
@@ -1695,7 +1699,11 @@ class TailwindPlusDownloader {
     }
 
     if (this.browser) {
-      await this.browser.close();
+      try {
+        await this.browser.close();
+      } catch (error) {
+        this.logger.debug(`Browser already closed: ${error.message}`);
+      }
     }
 
     await this.baseLogger.close();
@@ -2028,8 +2036,14 @@ class Worker {
         await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-unauthenticated`);
       }
 
-      // This will close all pages in the context
-      await this.context.close();
+      // This will close all pages in the context.  The browser process may already be gone, and
+      // closing a dead context throws; teardown must survive that.
+      try {
+        await this.context.close();
+      } catch (error) {
+        this.logger.debug(`Context already closed: ${error.message}`);
+      }
+
       this.context = null;
       this.page = null;
     }
