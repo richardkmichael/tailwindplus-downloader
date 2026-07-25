@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { chromium } from 'playwright';
+import { chromium, request } from 'playwright';
 import fs from 'fs';
 import path from 'path';
 import { read } from 'read';
@@ -293,6 +293,25 @@ function isEcommerceUrl(url) {
 }
 
 /**
+ * Reduces a format list to one entry per framework and version, dropping the mode.  Components
+ * that have no mode render identically in all three, so a pass per mode fetches the same content.
+ *
+ * @param {Format[]} formats - Formats to reduce
+ * @returns {Format[]} One format per framework/version pair, in the order given
+ */
+function uniqueFrameworkVersions(formats) {
+  const seen = new Set();
+  return formats.filter(format => {
+    const key = `${format.framework}-v${format.version}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
  * Validates that every component in a page's data-page matches the expected format and
  * returns the subcategory object.  eCommerce components carry no mode, so mode is
  * compared as null for eCommerce URLs.
@@ -359,7 +378,10 @@ function createConfig() {
       login: `${base}/plus/login`,
       plus: `${base}/plus`,
       discovery: `${base}/plus/ui-blocks`,
-      eCommerce: `${base}/plus/ui-blocks/ecommerce`
+      eCommerce: `${base}/plus/ui-blocks/ecommerce`,
+      // Sets the snippet format.  Unauthenticated it applies per component uuid, for the calling
+      // session only; authenticated it sets the account-wide preference.
+      language: `${base}/plus/ui-blocks/language`
     },
 
     selectors: {
@@ -1787,6 +1809,12 @@ class Worker {
     this.page = null;
     this.state = 'stopped';
 
+    // Unauthenticated reads go over plain HTTP.  The context is per worker because the site
+    // scopes the format to the calling session, so a shared one would let workers overwrite
+    // each other's component formats.
+    this.requestContext = null;
+    this.inertiaVersion = null;
+
     // Pad the worker ID to ensure consistent identifier length
     const identifier = `Worker ${id.toString().padStart(2, ' ')}`;
     this.logger = logger.prefix(identifier);
@@ -1815,17 +1843,10 @@ class Worker {
 
     this.state = 'started';
 
-    // Unauthenticated extraction needs a real page (received with session)
+    // Unauthenticated extraction reads over plain HTTP and needs no browser page.  Its own
+    // request context gives it its own cookie jar, and so its own per-component format state.
     if (this.downloader.options.unauthenticated) {
-      this.context = await this.browser.newContext(this.contextOptions);
-      this.context.setDefaultTimeout(CONFIG.timeout);
-
-      // Start tracing if enabled
-      if (this.downloader.options.debugTrace) {
-        await startTracing(this.context, `worker-${this.id}-unauthenticated`, `Worker ${this.id} (unauthenticated)`);
-      }
-
-      this.page = await this.context.newPage();
+      this.requestContext = await request.newContext();
     }
 
     // Job processing loop.  An interrupt stops the worker taking new jobs; the job already in
@@ -1924,172 +1945,168 @@ class Worker {
   }
 
   /**
-   * Extracts component data for unauthenticated (free) components by changing format controls
-   * per-component and capturing snippets from JSON responses.
+   * Reads a page as an Inertia partial, returning the same props as JSON at roughly a third of
+   * the bytes of the rendered HTML.  Falls back to a full read when no version is known yet, and
+   * again if the site is redeployed mid-run and rejects the version it gave us.
    *
-   * Uses data-page JSON to identify downloadable components by UUID, then iterates through all
-   * format combinations (framework/version/mode) for each component. Captures snippets either
-   * from JSON responses when controls are changed, or from initial data-page when format already
-   * matches.
+   * @param {string} url - Page URL
+   * @returns {Promise<Object>} Parsed page data
+   * @throws {DownloaderError} When the request fails with a non-2xx status
+   */
+  async _readUnauthenticatedPage(url) {
+    if (!this.inertiaVersion) {
+      return this._readUnauthenticatedPageFully(url);
+    }
+
+    const response = await this.requestContext.get(url, {
+      headers: {
+        'x-inertia': 'true',
+        'x-inertia-version': this.inertiaVersion,
+        'x-requested-with': 'XMLHttpRequest',
+        accept: 'text/html, application/xhtml+xml'
+      },
+      timeout: CONFIG.timeout
+    });
+
+    // The site answers 409 when the deployed asset version has moved on.
+    if (response.status() === 409) {
+      this.logger.debug('Inertia version stale, re-reading the full page');
+      this.inertiaVersion = null;
+      return this._readUnauthenticatedPageFully(url);
+    }
+
+    if (!response.ok()) {
+      throw new DownloaderError(`Request to ${url} failed with HTTP ${response.status()}`);
+    }
+
+    return JSON.parse(await response.text());
+  }
+
+  /**
+   * Reads a page as rendered HTML and parses the `data-page` attribute out of it, recording the
+   * Inertia version so later reads of the same page can use the smaller JSON response.
+   *
+   * @param {string} url - Page URL
+   * @returns {Promise<Object>} Parsed page data
+   * @throws {DownloaderError} When the request fails or carries no page data
+   */
+  async _readUnauthenticatedPageFully(url) {
+    const response = await this.requestContext.get(url, { timeout: CONFIG.timeout });
+    if (!response.ok()) {
+      throw new DownloaderError(`Request to ${url} failed with HTTP ${response.status()}`);
+    }
+
+    const pageData = parseDataPageFromHtml(await response.text());
+    if (!pageData) {
+      throw new DownloaderError(`No data-page attribute found on ${url}`);
+    }
+
+    this.inertiaVersion = pageData.version;
+    return pageData;
+  }
+
+  /**
+   * Sets the format of a single component for this worker's session.
+   *
+   * Unauthenticated, the site scopes this to the component uuid, so workers do not disturb each
+   * other's pages and every format of a page can be read without a global setting.  Mode is
+   * accepted but ignored for components that have none.
+   *
+   * @param {string} uuid - Component uuid
+   * @param {Format} format - Target format
+   * @throws {DownloaderError} When the request is rejected
+   */
+  async _setUnauthenticatedFormat(uuid, format) {
+    const state = await this.requestContext.storageState();
+    const xsrfToken = state.cookies.find(cookie => cookie.name === 'XSRF-TOKEN');
+    if (!xsrfToken) {
+      throw new DownloaderError('No XSRF-TOKEN cookie; cannot set the component format');
+    }
+
+    // The response redirects back to the page, which there is no reason to follow: the caller
+    // reads the page itself, once, after setting every component on it.
+    const response = await this.requestContext.put(CONFIG.urls.language, {
+      headers: { 'x-xsrf-token': decodeURIComponent(xsrfToken.value) },
+      data: { uuid, snippet_lang: format.toString() },
+      maxRedirects: 0,
+      timeout: CONFIG.timeout
+    });
+
+    if (response.status() >= 400) {
+      throw new DownloaderError(`Setting format ${format} on ${uuid} failed with HTTP ${response.status()}`);
+    }
+  }
+
+  /**
+   * Extracts every format of a page's free components over plain HTTP, with no browser page.
+   *
+   * The format is set per component with a PUT and the whole page is then read once, so a page
+   * costs one read per format rather than one per component per format.
    *
    * @param {Object} job - Job object containing URL
    * @returns {Promise<Object>} Component data organized by hierarchy with all format snippets
-   * @throws {DownloaderError} When page navigation fails or data extraction fails
+   * @throws {DownloaderError} When a request fails or the page carries no data
    */
   async _extractUnauthenticatedPageData(job) {
     const url = job.url;
-    const formats = this.downloader.formats;
 
-    // Relative selectors within a component section
-    const controlsRelative = 'div > :nth-child(2)';
-    const codeButtonRelative = `${controlsRelative} button:has-text("Code")`;
-    const frameworkSelectRelative = `${controlsRelative} select`;
-    const modeInputRelative = (mode) => `${controlsRelative} input[value="${mode}"]`;
+    const pageData = await this._readUnauthenticatedPage(url);
+    const subcategory = pageData.props.subcategory;
+    const product = subcategory.category.product.name;
+    const category = subcategory.category.name;
 
-    // Predicate for JSON response to the page URL
-    const isInertiaJsonResponse = response =>
-      response.url() === url &&
-      response.status() === 200 &&
-      (response.headers()['content-type'] || '').includes('application/json');
+    this.downloader._recordSubcategoryDescription(product, category, subcategory);
 
-    await this.page.goto(url, { waitUntil: 'domcontentloaded' });
-
-    // Wait for data-page to be available
-    await this.page.waitForFunction(() => {
-      const app = document.querySelector('#app');
-      return app && app.getAttribute('data-page');
-    });
-
-    // Get page structure and downloadable components from data-page JSON
-    const pageInfo = await this.page.evaluate(() => {
-      const data = JSON.parse(document.querySelector('#app').getAttribute('data-page'));
-      const subcategory = data.props.subcategory;
-      return {
-        product: subcategory.category.product.name,
-        category: subcategory.category.name,
-        subcategory: subcategory.name,
-        description: subcategory.description,
-        introduction: subcategory.introduction,
-        downloadableComponents: data.props.subcategory.components
-          .filter(c => c.downloadable && c.preview === 'light')
-          .map(c => ({ uuid: c.uuid, name: c.name, initialSnippet: c.snippet }))
-      };
-    });
-
-    const { product, category, subcategory, description, introduction, downloadableComponents } = pageInfo;
-
-    this.downloader._recordSubcategoryDescription(product, category, { name: subcategory, description, introduction });
-
-    if (downloadableComponents.length === 0) {
+    const freeComponents = subcategory.components.filter(c => c.downloadable && c.preview === 'light');
+    if (freeComponents.length === 0) {
       this.logger.debug(`No downloadable components on ${url}`);
       return {};
     }
 
-    this.logger.debug(`Found ${downloadableComponents.length} downloadable components`);
+    this.logger.debug(`Found ${freeComponents.length} downloadable components`);
 
-    // Build component data structure
+    // Components with no mode render identically in every mode, so one pass per
+    // framework/version covers them.  The page data says which kind this is.
+    const hasModes = freeComponents.some(component => component.snippet?.mode !== null);
+    const formats = hasModes ? this.downloader.formats : uniqueFrameworkVersions(this.downloader.formats);
+
+    const snippetsByUuid = new Map(freeComponents.map(component => [component.uuid, []]));
+
+    for (const format of formats) {
+      // One job covers every format of a page, so waiting for it to finish would make an
+      // interrupt feel unresponsive.  Stop between formats; an interrupted run writes no output.
+      if (this.downloader.interrupted) {
+        break;
+      }
+
+      for (const component of freeComponents) {
+        await this._setUnauthenticatedFormat(component.uuid, format);
+      }
+
+      const formatted = await this._readUnauthenticatedPage(url);
+      for (const component of formatted.props.subcategory.components) {
+        const snippets = snippetsByUuid.get(component.uuid);
+        if (snippets && component.snippet) {
+          snippets.push(this._shapeSnippet(component.snippet));
+        }
+      }
+    }
+
     const componentData = {};
     componentData[product] = {};
     componentData[product][category] = {};
-    componentData[product][category][subcategory] = {};
+    componentData[product][category][subcategory.name] = {};
 
-    // Process each downloadable component by UUID
-    for (const comp of downloadableComponents) {
-      const snippets = [];
-
-      // Locate section by UUID
-      const section = this.page.locator(`#component-${comp.uuid}`);
-      await section.waitFor({ state: 'visible', timeout: CONFIG.timeout });
-
-      // Click Code button to reveal controls
-      const codeButton = section.locator(codeButtonRelative);
-      await codeButton.click();
-
-      // Get framework select (first select in controls)
-      const frameworkSelect = section.locator(frameworkSelectRelative).first();
-
-      // Check if mode inputs exist (eCommerce pages don't have them)
-      const modeInputCount = await section.locator(`${controlsRelative} input[type="radio"]`).count();
-      const hasModeInputs = modeInputCount > 0;
-
-      // For pages without mode inputs, filter to unique framework/version combinations
-      let formatsToUse = formats;
-      if (!hasModeInputs) {
-        const seen = new Set();
-        formatsToUse = formats.filter(f => {
-          const key = `${f.framework}-${f.version}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      }
-
-      // Iterate through format combinations
-      for (const format of formatsToUse) {
-        // One unauthenticated job covers every format for a page, so waiting for it to finish
-        // makes an interrupt feel unresponsive.  Stop between formats instead; the partial data
-        // is discarded either way, since an interrupted run writes no output.
-        if (this.downloader.interrupted) {
-          return componentData;
-        }
-
-        let responseBody = null;
-
-        // Change framework if needed
-        const currentFramework = await frameworkSelect.inputValue();
-        if (currentFramework !== format.framework) {
-          const resp = this.page.waitForResponse(isInertiaJsonResponse);
-          await frameworkSelect.selectOption(format.framework);
-          responseBody = await (await resp).json();
-        }
-
-        // Change version if needed
-        const versionSelect = section.locator(frameworkSelectRelative).nth(1);
-        const actualVersion = await versionSelect.inputValue();
-        const targetVersion = String(format.version);
-        if (actualVersion !== targetVersion) {
-          const resp = this.page.waitForResponse(isInertiaJsonResponse);
-          await versionSelect.selectOption(targetVersion);
-          responseBody = await (await resp).json();
-        }
-
-        // Change mode if needed (only for pages with mode inputs)
-        if (hasModeInputs) {
-          const modeInput = section.locator(modeInputRelative(format.mode)).first();
-          const isChecked = await modeInput.isChecked();
-
-          if (!isChecked) {
-            const resp = this.page.waitForResponse(isInertiaJsonResponse);
-            await modeInput.click();
-            responseBody = await (await resp).json();
-          }
-        }
-
-        // Extract snippet - either from response or initial data-page
-        let snippet;
-        if (responseBody) {
-          const components = responseBody.props.subcategory.components;
-          const targetInResponse = components.find(c => c.uuid === comp.uuid);
-          snippet = targetInResponse?.snippet;
-        } else {
-          // No changes made - use initial snippet from data-page
-          snippet = comp.initialSnippet;
-        }
-
-        if (snippet) {
-          snippets.push(this._shapeSnippet(snippet));
-        }
-      }
-
-      componentData[product][category][subcategory][comp.name] = {
-        name: comp.name,
+    for (const component of freeComponents) {
+      const snippets = snippetsByUuid.get(component.uuid);
+      componentData[product][category][subcategory.name][component.name] = {
+        name: component.name,
         snippets
       };
-
-      this.logger.debug(`Collected ${snippets.length} snippets for ${comp.name}`);
+      this.logger.debug(`Collected ${snippets.length} snippets for ${component.name}`);
     }
 
-    this.logger.debug(`Extracted ${downloadableComponents.length} components from ${product}/${category}/${subcategory}`);
+    this.logger.debug(`Extracted ${freeComponents.length} components from ${product}/${category}/${subcategory.name}`);
     return componentData;
   }
 
@@ -2116,6 +2133,13 @@ class Worker {
       this.context = null;
       this.page = null;
     }
+
+    if (this.requestContext) {
+      await this.requestContext.dispose();
+      this.requestContext = null;
+      this.inertiaVersion = null;
+    }
+
     this.state = 'stopped';
   }
 }
