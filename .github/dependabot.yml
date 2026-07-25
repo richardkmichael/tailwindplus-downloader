@@ -6,6 +6,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     # Keep dependency-bump PRs in the repo's conventional-commit style
     # (chore(deps): ... for runtime deps, chore(deps-dev): ... for devDependencies).
     commit-message:
