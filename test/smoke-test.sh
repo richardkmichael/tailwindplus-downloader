@@ -445,6 +445,19 @@ test_unauth_dir_output() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+test_url_file_empty() {
+  local dir="$RUN_DIR/15-url-file-empty"
+  mkdir -p "$dir"
+  printf '# a comment, and no URLs\n\n' > "$dir/urls.txt"
+  local fail_before=$FAIL
+
+  # An unfiltered run would download every component, so this must abort rather than proceed.
+  run_cmd 1 "notty" downloader --unauthenticated --debug-url-file="$dir/urls.txt" --output="$dir/output.json"
+  check_file_absent "no output written" "$dir/output.json"
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # ── Test registry and runner ─────────────────────────────────────────────────
 
 TESTS=(
@@ -462,6 +475,7 @@ TESTS=(
   "unauthenticated: no credentials needed|test_unauth_no_credentials"
   "unauthenticated: page with no free components|test_unauth_no_free_components"
   "unauthenticated: dir output format|test_unauth_dir_output"
+  "URL file with no URLs aborts|test_url_file_empty"
 )
 
 echo -e "${BOLD}=== TailwindPlus Downloader Smoke Tests ===${NC}"

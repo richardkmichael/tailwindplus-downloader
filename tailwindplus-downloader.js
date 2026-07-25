@@ -1039,8 +1039,15 @@ class TailwindPlusDownloader {
       if (!fs.existsSync(urlFile)) {
         throw new DownloaderError(`URL file not found at: ${urlFile}`);
       }
-      this.logger.info(`URL file mode enabled. Filtering by: ${urlFile}`);
       const urls = fs.readFileSync(urlFile, 'utf8').split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+
+      // An empty set means "no filtering" downstream, which would silently download every
+      // component instead of the requested subset.  Refuse, as for a missing file.
+      if (urls.length === 0) {
+        throw new DownloaderError(`URL file contains no URLs: ${urlFile}`);
+      }
+
+      this.logger.info(`URL file mode enabled. Filtering by ${urls.length} URL(s) from: ${urlFile}`);
       return new Set(urls);
     }
     return new Set();
