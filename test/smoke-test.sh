@@ -2,8 +2,11 @@
 #
 # Smoke tests for tailwindplus-downloader option combinations.
 #
-# Requires an authenticated session or credentials file.  Run from the repo
-# root or from within test/.
+# Run from the repo root or from within test/.
+#
+# The unauthenticated tests need no login and always run.  The rest need a
+# session or credentials file and skip when neither is present, so this suite
+# is usable in CI without exposing an account.
 #
 # Usage: bash test/smoke-test.sh [--trace] [filter]
 #
@@ -110,25 +113,84 @@ check_file_exists() {
   fi
 }
 
+check_file_absent() {
+  local label="$1"
+  local path="$2"
+  if [[ ! -e "$path" ]]; then
+    pass "$label"
+  else
+    fail "$label  (unexpectedly present: $path)"
+  fi
+}
+
+# Compare the output's component_count against an expected value.
+# mode is "exact" or "min".
+check_component_count() {
+  local label="$1"
+  local path="$2"
+  local mode="$3"
+  local expected="$4"
+
+  if [[ ! -f "$path" ]]; then
+    fail "$label  (no output file: $path)"
+    return
+  fi
+
+  local actual
+  # readFileSync, not require: require() reads a bare relative path as a module name.
+  actual=$(node -e 'const fs = require("fs"); console.log(JSON.parse(fs.readFileSync(process.argv[1], "utf8")).component_count)' "$path" 2>&1)
+  if [[ ! "$actual" =~ ^[0-9]+$ ]]; then
+    fail "$label  (could not read component_count: $actual)"
+    return
+  fi
+
+  local ok=false
+  case "$mode" in
+    exact) [[ "$actual" -eq "$expected" ]] && ok=true ;;
+    min)   [[ "$actual" -ge "$expected" ]] && ok=true ;;
+    *)     fail "$label  (unknown mode: $mode)"; return ;;
+  esac
+
+  if $ok; then
+    pass "$label  (component_count=$actual)"
+  else
+    fail "$label  (component_count=$actual, expected $mode $expected)"
+  fi
+}
+
+# Guard for tests that need a login.  Use as: require_auth || return
+require_auth() {
+  if ! $HAS_AUTH; then
+    skip "$_NAME  (no session or credentials)"
+    return 1
+  fi
+  return 0
+}
+
 # ── Setup ────────────────────────────────────────────────────────────────────
 
 ONE_URL_FILE="test/one-test-url.txt"
 MANY_URL_FILE="test/many-test-urls.txt"
+NO_FREE_URL_FILE="test/no-free-components-url.txt"
 
 DEFAULT_SESSION=".tailwindplus-downloader-session.json"
 DEFAULT_CREDS=".tailwindplus-downloader-credentials.json"
 
 RUN_DIR="test/smoke-test-runs/run.$$"
 
-if [[ ! -f "$DEFAULT_SESSION" && ! -f "$DEFAULT_CREDS" ]]; then
-  echo "Smoke tests require a valid session or credentials file. Neither found:"
-  echo "  $DEFAULT_SESSION"
-  echo "  $DEFAULT_CREDS"
-  exit 1
-fi
-
 HAS_CREDS=false
 [[ -f "$DEFAULT_CREDS" ]] && HAS_CREDS=true
+
+# The unauthenticated tests need no login, so a run with no session or credentials
+# is valid — the authenticated tests skip instead of aborting the run.
+HAS_AUTH=false
+[[ -f "$DEFAULT_SESSION" || -f "$DEFAULT_CREDS" ]] && HAS_AUTH=true
+
+if ! $HAS_AUTH; then
+  echo "No session or credentials found; running unauthenticated tests only."
+  echo "  $DEFAULT_SESSION"
+  echo "  $DEFAULT_CREDS"
+fi
 
 # ── Test functions ───────────────────────────────────────────────────────────
 #
@@ -136,6 +198,7 @@ HAS_CREDS=false
 # downloader once, check postconditions, clean up on success.
 
 test_json_basic() {
+  require_auth || return
   local dir="$RUN_DIR/01-json-basic"
   mkdir -p "$dir"
   local fail_before=$FAIL
@@ -158,6 +221,7 @@ test_json_exists_aborts() {
 }
 
 test_json_overwrite() {
+  require_auth || return
   local dir="$RUN_DIR/03-json-overwrite"
   mkdir -p "$dir"
   touch "$dir/output.json"
@@ -169,6 +233,7 @@ test_json_overwrite() {
 }
 
 test_dir_basic() {
+  require_auth || return
   local dir="$RUN_DIR/04-dir-basic"
   mkdir -p "$dir"
   local fail_before=$FAIL
@@ -192,6 +257,7 @@ test_dir_exists_aborts() {
 }
 
 test_dir_overwrite() {
+  require_auth || return
   local dir="$RUN_DIR/06-dir-overwrite"
   mkdir -p "$dir/output"
   touch "$dir/output/placeholder"
@@ -204,6 +270,7 @@ test_dir_overwrite() {
 }
 
 test_dir_with_log() {
+  require_auth || return
   local dir="$RUN_DIR/07-dir-with-log"
   mkdir -p "$dir"
   local fail_before=$FAIL
@@ -215,6 +282,7 @@ test_dir_with_log() {
 }
 
 test_dir_default_path() {
+  require_auth || return
   local dir="$RUN_DIR/08-dir-default-path"
   mkdir -p "$dir"
   local fail_before=$FAIL
@@ -271,6 +339,56 @@ test_auth_relogin() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+# Unauthenticated mode captures only the free sample components, so these tests
+# need no session or credentials and are the subset CI can run.
+
+test_unauth_no_credentials() {
+  local dir="$RUN_DIR/12-unauth-no-credentials"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  # Run from inside the subdir, passing no auth arguments, so the default session
+  # and credentials paths resolve to a directory that has neither.  This is what
+  # proves the mode needs no account.
+  # shellcheck disable=SC2016 # $1/$@ expand inside the bash -c subshell, not here.
+  run_cmd 0 "" \
+    bash -c 'cd "$1" && shift && node "$@"' _ "$dir" \
+      "$ROOT_DIR/tailwindplus-downloader.js" \
+      --unauthenticated \
+      --debug-url-file="$ROOT_DIR/$ONE_URL_FILE" \
+      --output=output.json \
+      "${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"}"
+
+  check_file_exists "output file created" "$dir/output.json"
+  check_file_absent "no session file written" "$dir/$DEFAULT_SESSION"
+  check_component_count "free components captured" "$dir/output.json" min 1
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
+test_unauth_no_free_components() {
+  local dir="$RUN_DIR/13-unauth-no-free-components"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  run_cmd 0 "" downloader --unauthenticated --debug-url-file="$NO_FREE_URL_FILE" --output="$dir/output.json" --log --debug
+  check_component_count "completes with nothing captured" "$dir/output.json" exact 0
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
+test_unauth_dir_output() {
+  local dir="$RUN_DIR/14-unauth-dir-output"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  run_cmd 0 "" downloader --unauthenticated --debug-url-file="$ONE_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
+  check_file_exists "output directory created" "$dir/output"
+  check_file_exists "metadata.json written" "$dir/output/metadata.json"
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # ── Test registry and runner ─────────────────────────────────────────────────
 
 TESTS=(
@@ -285,6 +403,9 @@ TESTS=(
   "auth: credentials present, no session|test_auth_fresh_login"
   "auth: no credentials, no session, non-TTY aborts|test_auth_no_creds"
   "auth: invalid session, re-login succeeds|test_auth_relogin"
+  "unauthenticated: no credentials needed|test_unauth_no_credentials"
+  "unauthenticated: page with no free components|test_unauth_no_free_components"
+  "unauthenticated: dir output format|test_unauth_dir_output"
 )
 
 echo -e "${BOLD}=== TailwindPlus Downloader Smoke Tests ===${NC}"
