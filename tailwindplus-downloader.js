@@ -1920,7 +1920,7 @@ class Worker {
 
 function parseArgs() {
   const argv = yargs(hideBin(process.argv))
-    .wrap(null)
+    .wrap(yargs().terminalWidth())
     .version('version', 'Show version number', packageJson.version)
     .strict()
     .option('output', {

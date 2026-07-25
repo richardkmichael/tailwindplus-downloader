@@ -85,6 +85,7 @@ function parseArgs() {
     .example('$0 --tw=4', 'Compare v4 components between two most recent downloads')
     .example('$0 --tw-from=3 --tw-to=4', 'Compare v3 to v4 for upgrade planning')
     .example('$0 --old-file=old.json --new-file=new.json --tw=4', 'Compare specific files')
+    .epilog('Options can be specified as --option=value or --option value')
     .help('help')
     .alias('help', 'h')
     .wrap(yargs().terminalWidth())
