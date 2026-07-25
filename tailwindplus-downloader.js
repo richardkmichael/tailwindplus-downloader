@@ -1524,12 +1524,14 @@ class TailwindPlusDownloader {
       // The worker that ran the job already reported the failure, under its own log prefix.
       // Report only what is decided here: whether the job is retried.
 
-      // Re-queue failed job as pending, for retry, if under maxRetries
-      if (job.retryCount < CONFIG.retries.maxRetries) {
+      // Re-queue failed job as pending, for retry, if under the retry limit.  This is the only
+      // retry the user chooses; navigation retries work around a known intermittent Playwright
+      // fault and re-authentication attempts bound a session loop, so both stay internal.
+      if (job.retryCount < this.options.retries) {
         job.retryCount++;
         job.status = 'pending';
         this.jobQueue.push(job);
-        this.logger.warn(`Retrying ${job.url} (attempt ${job.retryCount}/${CONFIG.retries.maxRetries})`);
+        this.logger.warn(`Retrying ${job.url} (attempt ${job.retryCount}/${this.options.retries})`);
       } else {
         this.logger.error(`Max retries exceeded for ${job.url}, skipping`);
       }
@@ -2061,6 +2063,12 @@ function parseArgs() {
       requiresArg: true,
       default: 15,
       describe: 'Number of pages to download in parallel'
+    })
+    .option('retries', {
+      type: 'number',
+      requiresArg: true,
+      default: CONFIG.retries.maxRetries,
+      describe: 'Times to retry a page that fails to download'
     })
     .option('session', {
       type: 'string',
