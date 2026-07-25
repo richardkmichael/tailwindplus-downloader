@@ -189,6 +189,22 @@ check_descriptions() {
   fi
 }
 
+# Assert the directory output contains snippet filenames with no `-<mode>` suffix.  Only
+# components with a null mode produce these, so it confirms the mode-less path ran end to end.
+check_modeless_filenames() {
+  local label="$1"
+  local dir="$2"
+
+  local count
+  count=$(find "$dir" -type f \( -name 'html.html' -o -name 'react.jsx' -o -name 'vue.vue' \) 2>/dev/null | wc -l | tr -d ' ')
+
+  if [[ "$count" -gt 0 ]]; then
+    pass "$label  ($count files)"
+  else
+    fail "$label  (no suffix-free snippet filenames under $dir)"
+  fi
+}
+
 # Guard for tests that need a login.  Use as: require_auth || return
 require_auth() {
   if ! $HAS_AUTH; then
@@ -203,6 +219,7 @@ require_auth() {
 ONE_URL_FILE="test/one-test-url.txt"
 MANY_URL_FILE="test/many-test-urls.txt"
 NO_FREE_URL_FILE="test/no-free-components-url.txt"
+ECOMMERCE_URL_FILE="test/ecommerce-test-url.txt"
 
 DEFAULT_SESSION=".tailwindplus-downloader-session.json"
 DEFAULT_CREDS=".tailwindplus-downloader-credentials.json"
@@ -415,10 +432,15 @@ test_unauth_dir_output() {
   mkdir -p "$dir"
   local fail_before=$FAIL
 
-  run_cmd 0 "" downloader --unauthenticated --debug-url-file="$ONE_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
+  # An eCommerce page, so this covers the mode-less extraction path and the suffix-free filenames
+  # it produces, neither of which the moded page used elsewhere reaches.  It has more than one free
+  # component, so the per-component loop iterates.
+  run_cmd 0 "" downloader --unauthenticated --debug-url-file="$ECOMMERCE_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
   check_file_exists "output directory created" "$dir/output"
   check_file_exists "metadata.json written" "$dir/output/metadata.json"
   check_file_exists "descriptions.json written" "$dir/output/descriptions.json"
+  check_component_count "multiple free components captured" "$dir/output/metadata.json" min 2
+  check_modeless_filenames "mode-less snippet filenames" "$dir/output"
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
