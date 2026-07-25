@@ -1,0 +1,67 @@
+# Continuous integration.
+#
+# The smoke suite drives the live TailwindPlus site.  It runs in unauthenticated
+# mode here, which downloads only free sample components and needs no account, so
+# no credentials are stored in this repository.  The login-dependent tests skip
+# themselves when no session or credentials file is present.
+#
+# Because each run costs real requests against a third-party site, runs are
+# limited to pull requests and pushes to the default branch, superseded runs are
+# cancelled, and the suite executes on a single Node version.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [development]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Browsers are not needed to lint; the postinstall download is pure cost here.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run lint
+
+      - run: shellcheck test/smoke-test.sh
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Restore before `npm ci`, so the postinstall `playwright install` finds the
+      # browser already present and skips a ~95 MB download.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: playwright-${{ runner.os }}-
+
+      - run: npm ci
+
+      - run: npm test
