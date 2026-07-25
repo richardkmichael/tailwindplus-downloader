@@ -103,10 +103,26 @@ class Logger {
     this._log(LogLevel.ERROR, message, 'stderr');
   }
 
+  /**
+   * Closes the log stream, resolving once it has flushed.
+   *
+   * `end()` finishes asynchronously and `createWriteStream` opens the file lazily, so a caller
+   * that exits the process without awaiting this loses buffered output — and a run that fails
+   * early enough leaves no log file at all.
+   *
+   * @returns {Promise<void>} Resolves when the stream has finished, or immediately when logging
+   *   to the console
+   */
   close() {
-    if (this.logStream) {
-      this.logStream.end();
+    if (!this.logStream) {
+      return Promise.resolve();
     }
+
+    return new Promise(resolve => {
+      // Resolve on error too: a shutdown must not hang because the log could not be written.
+      this.logStream.once('error', resolve);
+      this.logStream.end(resolve);
+    });
   }
 }
 
@@ -448,6 +464,7 @@ class TailwindPlusDownloader {
     this.logger = baseLogger.prefix('Main');
     this.baseLogger = baseLogger;
     this.browser = null;
+    this.context = null;
     this.contextOptions = null;
     this.mainPage = null;
     this.credentials = this.options.credentials;
@@ -488,6 +505,11 @@ class TailwindPlusDownloader {
   }
 
   async start() {
+    // Exiting from the `catch` would skip the `finally` below, leaving the browser running, the
+    // trace unfinalized and the log file unflushed.  Record the outcome, tear down, then exit.
+    let succeeded = false;
+    let exitCode = 0;
+
     try {
       await this._checkOutputExists();
       await this._initializeBrowser();
@@ -514,16 +536,23 @@ class TailwindPlusDownloader {
       } else {
         this._processResultsAndWriteOutput();
       }
+
+      succeeded = true;
     } catch (error) {
       if (error instanceof DownloaderError) {
+        // Logged here rather than after teardown, which closes the logger.
         this.logger.error(error.message);
         this.logger.error('Exiting');
-        process.exit(1);
+        exitCode = 1;
       } else {
         throw error;
       }
     } finally {
-      await this.stop();
+      await this.stop({ completed: succeeded });
+    }
+
+    if (exitCode !== 0) {
+      process.exit(exitCode);
     }
   }
 
@@ -1630,24 +1659,36 @@ class TailwindPlusDownloader {
     }
   }
 
-  async stop() {
+  /**
+   * Tears down the run: reports the outcome, closes the page, finalizes any trace, closes the
+   * browser, and closes the logger.
+   *
+   * @param {Object} [options] - Teardown options
+   * @param {boolean} [options.completed=true] - Whether the run finished its work.  A failed run
+   *   skips the summary, which would otherwise report a download that did not happen
+   */
+  async stop({ completed = true } = {}) {
     this.logger.debug('--- Shutting down ---');
-    this._showStopMessage();
+
+    if (completed) {
+      this._showStopMessage();
+    }
 
     // Close main page if it exists
     if (this.mainPage && !this.mainPage.isClosed()) {
       await this.mainPage.close();
     }
 
-    // Stop tracing if enabled
-    if (this.options.debugTrace) {
+    // Stop tracing if enabled.  A run that failed before the browser was created has no context.
+    if (this.options.debugTrace && this.context) {
       await stopTracing(this.context, this.tracesDir, 'main');
     }
 
     if (this.browser) {
       await this.browser.close();
     }
-    this.baseLogger.close();
+
+    await this.baseLogger.close();
   }
 }
 
