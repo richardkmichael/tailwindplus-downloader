@@ -559,9 +559,15 @@ async function main() {
     return;
   }
 
+  // Counted here rather than read from `component_count`, so a file written by another tool, or
+  // an older downloader that did not record it, still reports.
+  const oldCount = getComponentPaths(oldComponents).length;
+  const newCount = getComponentPaths(newComponents).length;
+  const delta = newCount - oldCount;
+
   console.log(`Comparing:`);
-  console.log(`  Old: ${options.oldFile}`);
-  console.log(`  New: ${options.newFile}`);
+  console.log(`  Old: ${options.oldFile} (${oldCount} components)`);
+  console.log(`  New: ${options.newFile} (${newCount} components)${delta === 0 ? '' : ` — ${delta > 0 ? '+' : ''}${delta}`}`);
 
   getVersionInfo(oldData, newData);
   ensureDiffDir();
