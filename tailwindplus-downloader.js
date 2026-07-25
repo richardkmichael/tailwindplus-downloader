@@ -445,6 +445,11 @@ class TailwindPlusDownloader {
     this.componentData = {};
     this.componentCount = 0;
 
+    // Components actually downloaded, which is fewer than the discovered
+    // `componentCount` in unauthenticated mode: only free samples are reachable.
+    // Set when the output metadata is built.
+    this.capturedComponentCount = null;
+
     this.urls = [];
     this.urlCount = 0;
     this.jobQueue = [];
@@ -1464,6 +1469,7 @@ class TailwindPlusDownloader {
   _buildMetadata() {
     const durationSec = this._elapsedSecondsSinceStart();
     const componentCount = this._countComponents(this.componentData);
+    this.capturedComponentCount = componentCount;
 
     this.logger.debug('Sorting component data for stable output');
     sortSnippetsRecursively(this.componentData);
@@ -1539,8 +1545,12 @@ class TailwindPlusDownloader {
         savedMessage = `Download complete! Components saved to ${this.options.output} (${sizeKB} KB)`;
       }
 
+      const capturedSuffix = this.capturedComponentCount === null ?
+        '' :
+        ` Captured ${this.capturedComponentCount}.`;
+
       const messageLines = [
-        `Discovered ${this.urlCount} URLs with ${this.componentCount} individual components.`,
+        `Discovered ${this.urlCount} URLs with ${this.componentCount} individual components.${capturedSuffix}`,
         savedMessage,
         `Duration: ${durationSec}s`
       ];
