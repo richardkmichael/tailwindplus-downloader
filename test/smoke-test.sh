@@ -158,6 +158,37 @@ check_component_count() {
   fi
 }
 
+# Assert the output carries both description maps and that neither is empty.
+check_descriptions() {
+  local label="$1"
+  local path="$2"
+
+  if [[ ! -f "$path" ]]; then
+    fail "$label  (no output file: $path)"
+    return
+  fi
+
+  local counts
+  counts=$(node -e '
+    const fs = require("fs");
+    const d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).descriptions || {};
+    console.log(Object.keys(d.products || {}).length, Object.keys(d.subcategories || {}).length);
+  ' "$path" 2>&1)
+
+  if [[ ! "$counts" =~ ^[0-9]+\ [0-9]+$ ]]; then
+    fail "$label  (could not read descriptions: $counts)"
+    return
+  fi
+
+  local products="${counts% *}"
+  local subcategories="${counts#* }"
+  if [[ "$products" -gt 0 && "$subcategories" -gt 0 ]]; then
+    pass "$label  (products=$products, subcategories=$subcategories)"
+  else
+    fail "$label  (products=$products, subcategories=$subcategories, expected both non-zero)"
+  fi
+}
+
 # Guard for tests that need a login.  Use as: require_auth || return
 require_auth() {
   if ! $HAS_AUTH; then
@@ -241,6 +272,7 @@ test_dir_basic() {
   run_cmd 0 "" downloader --debug-url-file="$MANY_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
   check_file_exists "output directory created" "$dir/output"
   check_file_exists "metadata.json written" "$dir/output/metadata.json"
+  check_file_exists "descriptions.json written" "$dir/output/descriptions.json"
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
@@ -362,6 +394,7 @@ test_unauth_no_credentials() {
   check_file_exists "output file created" "$dir/output.json"
   check_file_absent "no session file written" "$dir/$DEFAULT_SESSION"
   check_component_count "free components captured" "$dir/output.json" min 1
+  check_descriptions "descriptions captured" "$dir/output.json"
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
@@ -385,6 +418,7 @@ test_unauth_dir_output() {
   run_cmd 0 "" downloader --unauthenticated --debug-url-file="$ONE_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
   check_file_exists "output directory created" "$dir/output"
   check_file_exists "metadata.json written" "$dir/output/metadata.json"
+  check_file_exists "descriptions.json written" "$dir/output/descriptions.json"
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
