@@ -39,12 +39,13 @@ Each test is self-contained in its own numbered subdirectory under `run.PID/` (e
 
 ## Testing a release tag via npx
 
-Smoke-test with the URL file and a prefixed output file:
+Smoke-test with the URL file and a prefixed output file.  The `claude_exp__` prefix (two
+underscores) is what the global gitignore matches, so the output and its `.log` stay untracked:
 
 ```bash
 npx github:richardkmichael/tailwindplus-downloader#<tag> \
   --debug-url-file=test/many-test-urls.txt \
-  --output=claude_exp-smoke-test.json \
+  --output=claude_exp__smoke-test.json \
   --log
 ```
 
