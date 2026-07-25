@@ -1,5 +1,6 @@
 tailwindplus-components-*.json
 tailwindplus-components-*.log
+tailwindplus-components-*/
 tailwindplus-skeleton.json
 
 diffs/
