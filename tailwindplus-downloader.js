@@ -460,6 +460,11 @@ class TailwindPlusDownloader {
     this.jobQueue = [];
     this.currentFormat = null;
 
+    // The account-level format in effect when the run started.  The site persists the format
+    // server-side, so it is restored when the format passes finish.  Null in unauthenticated
+    // mode, which has no account format.
+    this.initialFormat = null;
+
     // Mid-run re-authentication state.  `sessionGeneration` increments on each successful
     // re-login; `_reauthPromise` single-flights concurrent re-auth attempts so a burst of
     // simultaneous session expiries across workers triggers exactly one login.
@@ -486,8 +491,8 @@ class TailwindPlusDownloader {
         // In unauthenticated mode, use default format order (no detection needed)
         formats = this._generateFormats();
       } else {
-        const initialFormat = await this._detectFormat();
-        formats = this._generateFormats(initialFormat);
+        this.initialFormat = await this._detectFormat();
+        formats = this._generateFormats(this.initialFormat);
       }
 
       this._showStartMessage();
@@ -1181,7 +1186,8 @@ class TailwindPlusDownloader {
    * are no jobs left remaining.  When all workers stop (i.e., no jobs remain) the next format is
    * set, the job queue re-populated, workers started, and URLs downloaded "again".  The format is a
    * persisted server-side user account-level setting, and so all URLs must be downloaded in the
-   * current format before the format may be changed.
+   * current format before the format may be changed.  Because the setting persists beyond the run,
+   * the format the account started on is restored once the passes finish.
    *
    * In unauthenticated mode, workers handle all formats per-page in a single visit, since format
    * controls work per-component without authentication.
@@ -1215,23 +1221,29 @@ class TailwindPlusDownloader {
       return;
     }
 
-    // Authenticated mode: iterate through formats, setting account-level format
-    for (const format of formats) {
-      this.logger.info(`Starting download for format: ${format}`);
+    // Authenticated mode: iterate through formats, setting account-level format.  The format the
+    // account started on is restored in a `finally`, so a pass that throws partway does not strand
+    // the account on the format it stopped on.
+    try {
+      for (const format of formats) {
+        this.logger.info(`Starting download for format: ${format}`);
 
-      // Workers reference this to sanity check data
-      this.currentFormat = format;
+        // Workers reference this to sanity check data
+        this.currentFormat = format;
 
-      await this._setFormat(format);
+        await this._setFormat(format);
 
-      this._populateJobQueue();
+        this._populateJobQueue();
 
-      // Run workers
-      const workerPromises = workers.map(worker => worker.start());
-      await Promise.all(workerPromises);
-      await Promise.all(workers.map(worker => worker.stop()));
+        // Run workers
+        const workerPromises = workers.map(worker => worker.start());
+        await Promise.all(workerPromises);
+        await Promise.all(workers.map(worker => worker.stop()));
 
-      this.logger.info(`Downloaded format: ${format}`);
+        this.logger.info(`Downloaded format: ${format}`);
+      }
+    } finally {
+      await this._restoreInitialFormat();
     }
 
     this.logger.debug('All formats downloaded');
@@ -1382,6 +1394,31 @@ class TailwindPlusDownloader {
       this.logger.debug(`Set format: ${targetFormat}`);
     } catch (error) {
       throw new DownloaderError(`Failed to set format. ${error.message}`);
+    }
+  }
+
+  /**
+   * Restores the account-level format captured at the start of the run.
+   *
+   * `_setFormat` re-reads the live format and returns early when it already matches, so a run whose
+   * last pass happened to end on the initial format costs a page load and changes nothing.
+   *
+   * A failed restore is logged and swallowed.  It must not fail an otherwise successful run, nor
+   * replace the error that ended a failed one.
+   */
+  async _restoreInitialFormat() {
+    // Unauthenticated mode has no account format to restore, and an authenticated run that aborted
+    // before detection never changed one.
+    if (!this.initialFormat) {
+      return;
+    }
+
+    this.logger.info(`Restoring initial format: ${this.initialFormat}`);
+
+    try {
+      await this._setFormat(this.initialFormat);
+    } catch (error) {
+      this.logger.warn(`Failed to restore initial format ${this.initialFormat}. ${error.message}`);
     }
   }
 
