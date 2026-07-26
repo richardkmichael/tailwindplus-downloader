@@ -2052,7 +2052,7 @@ class Worker {
 // ===================================================================================
 
 function parseArgs() {
-  const argv = yargs(hideBin(process.argv))
+  const parser = yargs(hideBin(process.argv))
     .wrap(yargs().terminalWidth())
     .version('version', 'Show version number', packageJson.version)
     .strict()
@@ -2150,25 +2150,35 @@ function parseArgs() {
     .epilog('Options can be specified as --option=value or --option value')
     .help('help')
     .alias('help', 'h')
-    .parseSync();
+    ;
 
-  return {
-    output: argv.output,
-    outputFormat: argv.outputFormat,
-    overwrite: argv.overwrite,
-    workers: argv.workers,
-    retries: argv.retries,
-    showConfig: argv.showConfig,
-    session: argv.session || CONFIG.session,
-    credentials: argv.credentials || CONFIG.credentials,
-    log: argv.log,
-    debug: argv.debug,
-    debugShortTest: argv.debugShortTest,
-    debugUrlFile: argv.debugUrlFile,
-    debugHeaded: argv.debugHeaded,
-    debugTrace: argv.debugTrace,
-    unauthenticated: argv.unauthenticated
-  };
+  const argv = parser.parseSync();
+
+  // Derived rather than listed by hand: a list has to be updated whenever an option is added, and
+  // one missed there is accepted on the command line but undefined everywhere it is read, silently,
+  // since reading an absent property is not an error.
+  //
+  // Values come from argv, dropping yargs' own `_` and `$0` and the hyphenated spellings that
+  // duplicate the camelCase ones.
+  const YARGS_INTERNAL = new Set(['_', '$0']);
+  const options = Object.fromEntries(
+    Object.entries(argv).filter(([key]) => !YARGS_INTERNAL.has(key) && !key.includes('-'))
+  );
+
+  // An option that is declared, unset and has no default is absent from argv entirely.  Add it so
+  // every option is present and --show-config can list it; reading one is undefined either way.
+  // Best-effort: `getOptions` is yargs' own accessor, and losing it would cost only the listing.
+  const YARGS_OWN = new Set(['help', 'version']);
+  const toCamelCase = (key) => key.replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+
+  for (const declared of Object.keys(parser.getOptions().key)) {
+    const key = toCamelCase(declared);
+    if (!YARGS_OWN.has(key) && !(key in options)) {
+      options[key] = undefined;
+    }
+  }
+
+  return options;
 }
 
 async function main() {
