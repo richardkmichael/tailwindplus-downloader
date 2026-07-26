@@ -661,6 +661,52 @@ test_diff_component_counts() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+# Comparing two formats out of one file is the case with no second download to fall back on, so it
+# is driven end to end here: one file, one marketing component whose light and dark snippets
+# differ, and one eCommerce component with no modes at all.
+test_diff_formats_within_one_file() {
+  local dir="$RUN_DIR/19-diff-formats"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  local light='{"name":"html","language":"html","version":4,"mode":"light","code":"<div class=\"bg-white\"></div>"}'
+  local dark='{"name":"html","language":"html","version":4,"mode":"dark","code":"<div class=\"bg-black\"></div>"}'
+  local modeless='{"name":"html","language":"html","version":4,"mode":null,"code":"<div></div>"}'
+  printf '{"component_count":2,"tailwindplus":{"Marketing":{"Sections":{"Heroes":{"One":{"name":"One","snippets":[%s,%s]}}}},"Ecommerce":{"Components":{"Product lists":{"Priced":{"name":"Priced","snippets":[%s]}}}}}}\n' \
+    "$light" "$dark" "$modeless" > "$dir/components.json"
+
+  # Run from the test directory: the tool writes a `diffs/` directory beside its working
+  # directory, which should not land in the repo root.
+  # shellcheck disable=SC2016 # $1..$3 expand inside the bash -c subshell, not here.
+  run_cmd 0 "" bash -c 'cd "$1" && node "$2" --file=components.json --from=html-v4-light --to=html-v4-dark --verbose > "$3" 2>&1' \
+    _ "$dir" "$ROOT_DIR/tailwindplus-diff.js" "output.txt"
+
+  check_file_exists "diff named by both formats" \
+    "$dir/diffs/Marketing_Sections_Heroes_One_html-v4-light_to_html-v4-dark.diff"
+  check_log_contains "mode-less component reported as skipped" "$dir/output.txt" 'no mode variants'
+  check_log_contains "skipped component named" "$dir/output.txt" 'Product lists > Priced'
+
+  # A mode asked of a file holding only mode-less components reaches nothing, which must be said
+  # rather than reported as the two sides being identical.
+  printf '{"component_count":1,"tailwindplus":{"Ecommerce":{"Components":{"Product lists":{"Priced":{"name":"Priced","snippets":[%s]}}}}}}\n' \
+    "$modeless" > "$dir/ecommerce.json"
+
+  # shellcheck disable=SC2016 # $1..$3 expand inside the bash -c subshell, not here.
+  run_cmd 0 "" bash -c 'cd "$1" && node "$2" --file=ecommerce.json --from=html-v4-light --to=html-v4-dark > "$3" 2>&1' \
+    _ "$dir" "$ROOT_DIR/tailwindplus-diff.js" "ecommerce.txt"
+
+  check_log_contains "empty comparison reported" "$dir/ecommerce.txt" 'Nothing was compared'
+
+  # An unreadable format is refused before any file is opened.
+  # shellcheck disable=SC2016 # $1..$3 expand inside the bash -c subshell, not here.
+  run_cmd 1 "" bash -c 'cd "$1" && node "$2" --file=components.json --from=html-v5 --to=html-v4-dark > "$3" 2>&1' \
+    _ "$dir" "$ROOT_DIR/tailwindplus-diff.js" "invalid.txt"
+
+  check_log_contains "invalid format explained" "$dir/invalid.txt" "Invalid format 'html-v5'"
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # An option accepted on the command line but not carried through to the run is invisible: reading
 # an absent property is not an error, so the value simply behaves as though it were never passed.
 # --show-config is where that becomes observable, so it is asserted here.
@@ -701,6 +747,7 @@ TESTS=(
   "URL file with no URLs aborts|test_url_file_empty"
   "interrupt shuts down cleanly|test_interrupt_shuts_down"
   "diff: component counts reported|test_diff_component_counts"
+  "diff: formats within one file|test_diff_formats_within_one_file"
   "options reach the run|test_options_reach_the_run"
 )
 
