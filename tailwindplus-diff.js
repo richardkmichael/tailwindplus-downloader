@@ -258,7 +258,12 @@ function discoverFiles(options) {
  */
 function loadFiles(options) {
   const oldData = JSON.parse(fs.readFileSync(options.oldFile, 'utf8'));
-  const newData = JSON.parse(fs.readFileSync(options.newFile, 'utf8'));
+
+  // A --file comparison reads the same file on both sides.  The comparison never mutates the
+  // trees, so parse the file once and share it; a download file can run to many megabytes.
+  const newData = options.newFile === options.oldFile
+    ? oldData
+    : JSON.parse(fs.readFileSync(options.newFile, 'utf8'));
 
   // Extract component data (handle both old and new formats)
   const oldComponents = oldData.tailwindplus || oldData;
