@@ -5,6 +5,9 @@
  *
  * Compares TailwindPlus component files between downloads, with support for
  * version-specific comparisons (v3 vs v4) and framework-specific diffs.
+ *
+ * --from and --to name a format outright, so any format can be compared against any other --
+ * across frameworks, versions and modes -- including two formats within a single download.
  */
 
 import fs from 'fs';
@@ -19,8 +22,92 @@ const DIFF_DIR = 'diffs';
 // The axes a component is downloaded across.  Every component carries a snippet for each
 // framework and version; only the mode varies, and eCommerce components have none.
 const FRAMEWORKS = ['html', 'react', 'vue'];
+const VERSIONS = [3, 4];
+const MODES = ['system', 'light', 'dark'];
 
 const toCamelCase = (key) => key.replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+const toOptionName = (key) => `--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
+
+/**
+ * Parse a format written the way the downloader names formats: `framework-vN-mode`, or
+ * `framework-vN` for the mode-less format eCommerce components are downloaded in.
+ *
+ * @param {string} spec - Format to parse, e.g. `html-v4-dark`
+ * @returns {{framework: string, version: number, mode: string|null}} Parsed format
+ * @throws {Error} When the spec is not a format the downloader produces
+ */
+function parseFormat(spec) {
+  const match = /^([a-z]+)-v(\d+)(?:-([a-z]+))?$/.exec(String(spec ?? ''));
+  const framework = match?.[1];
+  const version = match ? parseInt(match[2], 10) : null;
+  const mode = match?.[3] ?? null;
+
+  const known = match &&
+    FRAMEWORKS.includes(framework) &&
+    VERSIONS.includes(version) &&
+    (mode === null || MODES.includes(mode));
+
+  if (!known) {
+    throw new Error(
+      `Invalid format '${spec}'.  Expected <framework>-v<version>[-<mode>]: framework one of ` +
+      `${FRAMEWORKS.join(', ')}; version one of ${VERSIONS.join(', ')}; mode one of ` +
+      `${MODES.join(', ')}, or left off for components that have no modes.`);
+  }
+
+  return { framework, version, mode };
+}
+
+/**
+ * Render a format the way the downloader names them, so a parsed format round-trips
+ *
+ * @param {{framework: string, version: number, mode: string|null}} format - Format to render
+ * @returns {string} Format name, e.g. `html-v4-dark`
+ */
+function formatName({ framework, version, mode }) {
+  return mode === null ? `${framework}-v${version}` : `${framework}-v${version}-${mode}`;
+}
+
+/**
+ * Check option combinations, apart from the parser so it can be exercised directly
+ *
+ * @param {Object} options - Options keyed by their camelCase spelling
+ * @returns {true} When the combination is usable
+ * @throws {Error} Carrying the message shown to the user, when it is not
+ */
+function validateOptions(options) {
+  const given = (key) => options[key] !== undefined;
+
+  if (given('from') !== given('to')) {
+    throw new Error('Both --from and --to must be specified together');
+  }
+
+  if (given('from')) {
+    // --from/--to name the framework, version and mode outright, so the options that select those
+    // axes have nothing left to say and would only disagree.
+    const conflicting = ['tw', 'twFrom', 'twTo', 'framework'].filter(given).map(toOptionName);
+    if (conflicting.length > 0) {
+      throw new Error(`--from/--to already select the framework, version and mode: drop ${conflicting.join(', ')}`);
+    }
+
+    // Parse for the error, which names the format that could not be read.
+    parseFormat(options.from);
+    parseFormat(options.to);
+  }
+
+  if (given('file') && (given('oldFile') || given('newFile'))) {
+    throw new Error('--file reads both sides from one file; it cannot be combined with --old-file or --new-file');
+  }
+
+  if (given('tw') && (given('twFrom') || given('twTo'))) {
+    throw new Error('--tw cannot be used with --tw-from/--tw-to');
+  }
+
+  if (given('twFrom') !== given('twTo')) {
+    throw new Error('Both --tw-from and --tw-to must be specified together');
+  }
+
+  return true;
+}
 
 /**
  * Configure and parse command line arguments with yargs
@@ -41,6 +128,21 @@ function parseArgs(args = hideBin(process.argv)) {
       type: 'string',
       requiresArg: true,
       describe: 'New component file <file> (auto-detected if not specified)'
+    })
+    .option('file', {
+      type: 'string',
+      requiresArg: true,
+      describe: 'Component file <file> read for both sides, to compare formats within one download'
+    })
+    .option('from', {
+      type: 'string',
+      requiresArg: true,
+      describe: 'Source format <framework-vN[-mode]>, e.g. html-v4-light (requires --to)'
+    })
+    .option('to', {
+      type: 'string',
+      requiresArg: true,
+      describe: 'Target format <framework-vN[-mode]>, e.g. html-v4-dark (requires --from)'
     })
     .option('tw', {
       type: 'string',
@@ -74,26 +176,13 @@ function parseArgs(args = hideBin(process.argv)) {
       type: 'boolean',
       describe: 'Only show component names that differ between files (no content comparison)'
     })
-    .check((argv) => {
-      // Check for mutually exclusive version options
-      const hasVersion = argv.tw !== undefined;
-      const hasFromTo = argv.twFrom !== undefined || argv.twTo !== undefined;
-
-      if (hasVersion && hasFromTo) {
-        throw new Error('--tw cannot be used with --tw-from/--tw-to');
-      }
-
-      // If using --tw-from or --tw-to, both must be specified
-      if ((argv.twFrom !== undefined) !== (argv.twTo !== undefined)) {
-        throw new Error('Both --tw-from and --tw-to must be specified together');
-      }
-
-      return true;
-    })
+    .check(validateOptions)
     .usage('Usage: $0 [options]')
     .example('$0 --tw=4', 'Compare v4 components between two most recent downloads')
     .example('$0 --tw-from=3 --tw-to=4', 'Compare v3 to v4 for upgrade planning')
     .example('$0 --old-file=old.json --new-file=new.json --tw=4', 'Compare specific files')
+    .example('$0 --file=components.json --from=html-v4-light --to=html-v4-dark', 'Compare two formats within one download')
+    .example('$0 --from=html-v4-system --to=react-v4-system', 'Compare frameworks between two downloads')
     .epilog('Options can be specified as --option=value or --option value')
     .help('help')
     .alias('help', 'h')
@@ -129,6 +218,13 @@ function parseArgs(args = hideBin(process.argv)) {
  * Auto-discover component files
  */
 function discoverFiles(options) {
+  if (options.file) {
+    // One download, two formats: both sides read the same file.
+    options.oldFile = options.file;
+    options.newFile = options.file;
+    return;
+  }
+
   if (options.oldFile && options.newFile) {
     return; // Both files specified
   }
@@ -331,11 +427,38 @@ function getComponentPaths(components) {
 }
 
 /**
- * Compare component names between old and new files
+ * Component paths carrying a snippet in the given format
+ *
+ * @param {Object} components - Nested component structure
+ * @param {{framework: string, version: number, mode: string|null}} format - Format to look for
+ * @returns {string[]} Sorted component paths
+ */
+function getComponentPathsAtFormat(components, format) {
+  const paths = [];
+
+  forEachComponent(components, (componentData, { category, subcategory, group, component }) => {
+    if (findSnippetCode(componentData, format.version, format.framework, format.mode)) {
+      paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
+    }
+  });
+
+  return paths.sort();
+}
+
+/**
+ * Compare component names between old and new files, or between the two requested formats
  */
 function compareComponentNames(oldComponents, newComponents, options) {
-  const oldPaths = getComponentPaths(oldComponents);
-  const newPaths = getComponentPaths(newComponents);
+  // With a format pair the two sides are the components present at each format, which is the only
+  // reading that says anything when both sides come from one file.
+  const byFormat = Boolean(options.from && options.to);
+  const pathsIn = (components, spec) =>
+    byFormat ? getComponentPathsAtFormat(components, parseFormat(spec)) : getComponentPaths(components);
+
+  const oldPaths = pathsIn(oldComponents, options.from);
+  const newPaths = pathsIn(newComponents, options.to);
+  const oldSide = byFormat ? `${options.oldFile} at ${options.from}` : options.oldFile;
+  const newSide = byFormat ? `${options.newFile} at ${options.to}` : options.newFile;
 
   const oldSet = new Set(oldPaths);
   const newSet = new Set(newPaths);
@@ -344,24 +467,26 @@ function compareComponentNames(oldComponents, newComponents, options) {
   const onlyInNew = newPaths.filter(path => !oldSet.has(path));
 
   console.log(`Comparing component names:`);
-  console.log(`  Old: ${options.oldFile} (${oldPaths.length} components)`);
-  console.log(`  New: ${options.newFile} (${newPaths.length} components)`);
+  console.log(`  Old: ${oldSide} (${oldPaths.length} components)`);
+  console.log(`  New: ${newSide} (${newPaths.length} components)`);
   console.log('');
 
   if (onlyInOld.length > 0) {
-    console.log('Only in old file:');
+    console.log(`Only in ${byFormat ? oldSide : 'old file'}:`);
     onlyInOld.forEach(path => console.log(path));
     console.log('');
   }
 
   if (onlyInNew.length > 0) {
-    console.log('Only in new file:');
+    console.log(`Only in ${byFormat ? newSide : 'new file'}:`);
     onlyInNew.forEach(path => console.log(path));
     console.log('');
   }
 
   if (onlyInOld.length === 0 && onlyInNew.length === 0) {
-    console.log('Component names are identical between files.');
+    console.log(byFormat
+      ? 'The same components are present at both formats.'
+      : 'Component names are identical between files.');
   } else {
     console.log(`Summary: ${onlyInOld.length} only in old, ${onlyInNew.length} only in new`);
   }
@@ -447,6 +572,22 @@ function getVersionPairs(options, oldComponents, newComponents) {
  *   `fileLabel`
  */
 function getComparisons(options, oldComponents, newComponents, modes) {
+  if (options.from && options.to) {
+    const from = parseFormat(options.from);
+    const to = parseFormat(options.to);
+    const fromLabel = formatName(from);
+    const toLabel = formatName(to);
+
+    return [{
+      from,
+      to,
+      describe: `${fromLabel} -> ${toLabel}`,
+      fromLabel,
+      toLabel,
+      fileLabel: `${fromLabel}_to_${toLabel}`
+    }];
+  }
+
   const versionPairs = getVersionPairs(options, oldComponents, newComponents);
   const frameworks = options.framework ? [options.framework] : FRAMEWORKS;
 
@@ -479,6 +620,8 @@ async function compareSnippetCombination(oldComponent, newComponent, comparison,
   if (!oldContent && !newContent) {
     return;
   }
+
+  state.compared++;
 
   if (!oldContent || !newContent) {
     ensureHeaderPrinted(state);
@@ -524,6 +667,7 @@ function ensureHeaderPrinted(state) {
 async function compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader) {
   const state = {
     diffs: 0,
+    compared: 0,
     hasDifferences: false,
     headerPrinted: false,
     componentHeader
@@ -533,7 +677,50 @@ async function compareComponent(oldComponent, newComponent, comparisons, compone
     await compareSnippetCombination(oldComponent, newComponent, comparison, componentPath, options, state);
   }
 
-  return { diffs: state.diffs, hasDifferences: state.hasDifferences };
+  return { diffs: state.diffs, compared: state.compared, hasDifferences: state.hasDifferences };
+}
+
+const SKIP_NO_MODES = 'no mode variants, so a format naming a mode cannot match (eCommerce components have none)';
+const SKIP_NOT_PRESENT = 'neither requested format present';
+
+/**
+ * Why a component matched none of the requested formats.  A component downloaded without modes --
+ * which is how eCommerce components come -- can never match a request naming one, and saying so is
+ * the difference between a useful report and a silent absence.
+ *
+ * @param {Object} component - Component that matched nothing
+ * @param {boolean} modeRequested - Whether any comparison names a mode
+ * @returns {string} Reason text, for grouping into the summary
+ */
+function skipReason(component, modeRequested) {
+  const snippets = getSnippets(component);
+  const modeless = snippets.length > 0 && snippets.every(snippet => snippet.mode === null);
+
+  return modeless && modeRequested ? SKIP_NO_MODES : SKIP_NOT_PRESENT;
+}
+
+/**
+ * Report the components no comparison could reach, grouped by why
+ *
+ * @param {Array<{path: string, reason: string}>} skipped - Components that matched nothing
+ * @param {Object} options - Parsed command line options
+ */
+function reportSkipped(skipped, options) {
+  const byReason = new Map();
+  for (const { path: componentPath, reason } of skipped) {
+    byReason.set(reason, [...(byReason.get(reason) ?? []), componentPath]);
+  }
+
+  for (const [reason, paths] of byReason) {
+    const plural = paths.length === 1 ? 'component' : 'components';
+    console.log(`\nSkipped ${paths.length} ${plural}: ${reason}.`);
+
+    if (options.verbose) {
+      paths.forEach(componentPath => console.log(`  ${componentPath}`));
+    } else {
+      console.log('  Run again with --verbose to list them.');
+    }
+  }
 }
 
 /**
@@ -543,7 +730,9 @@ async function compareComponents(oldComponents, newComponents, options) {
   console.log('Processing components...\n');
 
   let totalDiffs = 0;
+  let totalCompared = 0;
   let differencesFound = false;
+  const skipped = [];
 
   // Collect all available modes from both old and new components
   const oldModes = collectModes(oldComponents);
@@ -551,6 +740,7 @@ async function compareComponents(oldComponents, newComponents, options) {
   const allModes = [...new Set([...oldModes, ...newModes])].sort(compareModes);
 
   const comparisons = getComparisons(options, oldComponents, newComponents, allModes);
+  const modeRequested = comparisons.some(({ from, to }) => from.mode !== null || to.mode !== null);
 
   console.log(`Available modes: ${allModes.map(m => m === null ? 'null' : m).join(', ')}\n`);
 
@@ -583,13 +773,25 @@ async function compareComponents(oldComponents, newComponents, options) {
             differencesFound = true;
           }
 
+          if (result.compared === 0) {
+            skipped.push({
+              path: `${category} > ${subcategory} > ${group} > ${component}`,
+              reason: skipReason(newComponent, modeRequested)
+            });
+          }
+
           totalDiffs += result.diffs;
+          totalCompared += result.compared;
         }
       }
     }
   }
 
-  if (differencesFound) {
+  reportSkipped(skipped, options);
+
+  if (totalCompared === 0) {
+    console.log(`\nNothing was compared: no component carries a requested format.`);
+  } else if (differencesFound) {
     console.log(`\nComparison complete. Generated ${totalDiffs} diff files in '${DIFF_DIR}/' directory.`);
   } else {
     console.log(`\nTailwindPlus components are identical.`);
