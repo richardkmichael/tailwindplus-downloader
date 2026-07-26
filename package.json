@@ -32,10 +32,11 @@
   },
   "scripts": {
     "postinstall": "npx playwright install --with-deps chromium",
-    "test": "bash test/smoke-test.sh",
+    "test": "npm run test:unit && npm run smoke-test",
     "lint": "eslint --config eslint.config.cjs \"**/*.js\"",
     "lint:fix": "eslint --config eslint.config.cjs \"**/*.js\" --fix",
     "create-skeleton": "bash scripts/create-skeleton.sh",
-    "smoke-test": "bash test/smoke-test.sh"
+    "smoke-test": "bash test/smoke-test.sh",
+    "test:unit": "node --test test/*.test.js"
   }
 }

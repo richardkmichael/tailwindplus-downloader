@@ -2,6 +2,7 @@
 
 import { chromium, request } from 'playwright';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 import path from 'path';
 import { read } from 'read';
 import yargs from 'yargs';
@@ -2207,7 +2208,27 @@ async function main() {
   await downloader.start();
 }
 
-main().catch(error => {
-  console.error('[FATAL]', error);
-  process.exit(1);
-});
+// Exported for unit tests.  These are the pure parts: no network, browser or session, so they can
+// be called directly rather than through a download.
+export {
+  decodeHtmlEntities,
+  parseDataPageFromHtml,
+  isEcommerceUrl,
+  selectFreeComponents,
+  uniqueFrameworkVersions,
+  subcategoryOfRequiredFormat,
+  sortSnippetsRecursively,
+  Format
+};
+
+// Run only when executed, not when imported.  `npm` installs the bin as a symlink, so both sides
+// are resolved to their real paths before comparing.
+const executedDirectly = process.argv[1] &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+
+if (executedDirectly) {
+  main().catch(error => {
+    console.error('[FATAL]', error);
+    process.exit(1);
+  });
+}
