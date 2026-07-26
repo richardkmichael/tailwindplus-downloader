@@ -1421,14 +1421,23 @@ class TailwindPlusDownloader {
 
         const frameworkVersion = `${format.framework}-v${format.version}`;
         const includeEcommerce = !eCommerceDownloadedFor.has(frameworkVersion);
-        eCommerceDownloadedFor.add(frameworkVersion);
 
         this._populateJobQueue({ includeEcommerce });
 
         // Run workers
+        const failedBeforePass = this.failedUrls.length;
         const workerPromises = workers.map(worker => worker.start());
         await Promise.all(workerPromises);
         await Promise.all(workers.map(worker => worker.stop()));
+
+        // Recorded after the pass, and only when its eCommerce pages actually downloaded.  Marking
+        // beforehand would retire the framework and version on a pass that failed, leaving the two
+        // later passes for the same pair -- which would have fetched the identical content -- to
+        // skip it.
+        const failedThisPass = this.failedUrls.slice(failedBeforePass);
+        if (includeEcommerce && !failedThisPass.some(isEcommerceUrl)) {
+          eCommerceDownloadedFor.add(frameworkVersion);
+        }
 
         this.logger.info(`Downloaded format: ${format}`);
 
