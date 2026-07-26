@@ -11,6 +11,7 @@ import {
   parseDataPageFromHtml,
   isEcommerceUrl,
   selectFreeComponents,
+  componentsHaveModes,
   uniqueFrameworkVersions,
   subcategoryOfRequiredFormat,
   sortSnippetsRecursively,
@@ -88,6 +89,30 @@ describe('selectFreeComponents', () => {
   test('keeps distinct components apart', () => {
     const other = { name: 'Footer', preview: 'light', downloadable: true, uuid: 'c' };
     assert.equal(selectFreeComponents([light, dark, other]).length, 2);
+  });
+});
+
+describe('componentsHaveModes', () => {
+  const moded = { name: 'Hero', snippet: { name: 'html', version: 4, mode: 'light' } };
+  const modeless = { name: 'Product list', snippet: { name: 'html', version: 4, mode: null } };
+
+  test('true when a component carries a mode', () => {
+    assert.equal(componentsHaveModes([moded]), true);
+  });
+
+  test('false when every component has a null mode', () => {
+    assert.equal(componentsHaveModes([modeless, modeless]), false);
+  });
+
+  test('a component with no snippet does not make a page moded', () => {
+    // Optional chaining reads a missing snippet's mode as undefined, which is not null, so a
+    // snippetless component would drive a mode-less page through all 18 formats and collect the
+    // same six snippets three times over.
+    assert.equal(componentsHaveModes([{ name: 'Broken' }, modeless]), false);
+  });
+
+  test('false for no components at all', () => {
+    assert.equal(componentsHaveModes([]), false);
   });
 });
 

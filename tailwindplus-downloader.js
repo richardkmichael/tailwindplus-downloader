@@ -329,6 +329,21 @@ function selectFreeComponents(components) {
  * @param {Format[]} formats - Formats to reduce
  * @returns {Format[]} One format per framework/version pair, in the order given
  */
+/**
+ * Reports whether a page's components carry modes.
+ *
+ * Components with no mode render identically in all three, so one pass per framework and version
+ * covers them.  A component with no snippet says nothing either way and is ignored: treating it as
+ * moded would drive a mode-less page through all 18 formats and collect the same six snippets three
+ * times over.
+ *
+ * @param {Object[]} components - Components from a subcategory's page data
+ * @returns {boolean} True when any component carries a mode
+ */
+function componentsHaveModes(components) {
+  return components.some(component => component.snippet && component.snippet.mode !== null);
+}
+
 function uniqueFrameworkVersions(formats) {
   const seen = new Set();
   return formats.filter(format => {
@@ -1956,10 +1971,9 @@ class Worker {
 
     this.logger.debug(`Found ${freeComponents.length} downloadable components`);
 
-    // Components with no mode render identically in every mode, so one pass per
-    // framework/version covers them.  The page data says which kind this is.
-    const hasModes = freeComponents.some(component => component.snippet?.mode !== null);
-    const formats = hasModes ? this.downloader.formats : uniqueFrameworkVersions(this.downloader.formats);
+    const formats = componentsHaveModes(freeComponents)
+      ? this.downloader.formats
+      : uniqueFrameworkVersions(this.downloader.formats);
 
     const snippetsByUuid = new Map(freeComponents.map(component => [component.uuid, []]));
 
@@ -2207,6 +2221,7 @@ export {
   parseDataPageFromHtml,
   isEcommerceUrl,
   selectFreeComponents,
+  componentsHaveModes,
   uniqueFrameworkVersions,
   subcategoryOfRequiredFormat,
   sortSnippetsRecursively,
