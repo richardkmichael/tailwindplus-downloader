@@ -375,9 +375,13 @@ function getSnippets(component) {
 }
 
 /**
- * Find snippet code by version, framework, and mode from component's snippets array
+ * Find snippet code matching a format in the component's snippets array
+ *
+ * @param {Object} component - Component whose snippets are searched
+ * @param {{framework: string, version: number, mode: string|null}} format - Format to match
+ * @returns {string|null} The snippet's code, or null when the component has no such snippet
  */
-function findSnippetCode(component, version, framework, mode = null) {
+function findSnippetCode(component, { framework, version, mode }) {
   const snippet = getSnippets(component).find(s =>
     s.version === version && s.name === framework && s.mode === mode
   );
@@ -438,7 +442,7 @@ function getComponentPathsAtFormat(components, format) {
   const paths = [];
 
   forEachComponent(components, (componentData, { category, subcategory, group, component }) => {
-    if (findSnippetCode(componentData, format.version, format.framework, format.mode)) {
+    if (findSnippetCode(componentData, format)) {
       paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
     }
   });
@@ -614,8 +618,8 @@ function getComparisons(options, oldComponents, newComponents, modes) {
  */
 async function compareSnippetCombination(oldComponent, newComponent, comparison, componentPath, options, state) {
   const { from, to } = comparison;
-  const oldContent = findSnippetCode(oldComponent, from.version, from.framework, from.mode);
-  const newContent = findSnippetCode(newComponent, to.version, to.framework, to.mode);
+  const oldContent = findSnippetCode(oldComponent, from);
+  const newContent = findSnippetCode(newComponent, to);
 
   // Skip if neither component has this combination
   if (!oldContent && !newContent) {
