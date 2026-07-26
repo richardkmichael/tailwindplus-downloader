@@ -16,11 +16,16 @@ import { hideBin } from 'yargs/helpers';
 // Configuration
 const DIFF_DIR = 'diffs';
 
+const toCamelCase = (key) => key.replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+
 /**
  * Configure and parse command line arguments with yargs
+ *
+ * @param {string[]} args - Arguments to parse, defaulting to the process's own
+ * @returns {Object} Options, keyed by the camelCase spelling of each declared option
  */
-function parseArgs() {
-  const argv = yargs(hideBin(process.argv))
+function parseArgs(args = hideBin(process.argv)) {
+  const parser = yargs(args)
     .version(false)
     .strict()
     .option('old-file', {
@@ -67,15 +72,15 @@ function parseArgs() {
     })
     .check((argv) => {
       // Check for mutually exclusive version options
-      const hasVersion = argv['tw'] !== undefined;
-      const hasFromTo = argv['tw-from'] !== undefined || argv['tw-to'] !== undefined;
+      const hasVersion = argv.tw !== undefined;
+      const hasFromTo = argv.twFrom !== undefined || argv.twTo !== undefined;
 
       if (hasVersion && hasFromTo) {
         throw new Error('--tw cannot be used with --tw-from/--tw-to');
       }
 
       // If using --tw-from or --tw-to, both must be specified
-      if ((argv['tw-from'] !== undefined) !== (argv['tw-to'] !== undefined)) {
+      if ((argv.twFrom !== undefined) !== (argv.twTo !== undefined)) {
         throw new Error('Both --tw-from and --tw-to must be specified together');
       }
 
@@ -88,20 +93,32 @@ function parseArgs() {
     .epilog('Options can be specified as --option=value or --option value')
     .help('help')
     .alias('help', 'h')
-    .wrap(yargs().terminalWidth())
-    .parseSync();
+    .wrap(yargs().terminalWidth());
 
-  // Convert kebab-case to camelCase for internal use
-  return {
-    oldFile: argv['old-file'],
-    newFile: argv['new-file'],
-    version: argv['tw'],
-    fromVersion: argv['tw-from'],
-    toVersion: argv['tw-to'],
-    framework: argv['framework'],
-    verbose: argv['verbose'],
-    namesOnly: argv['names-only']
-  };
+  const argv = parser.parseSync();
+
+  // Derived rather than listed by hand: a list has to be updated whenever an option is added, and
+  // one missed there is accepted on the command line but undefined everywhere it is read, silently,
+  // since reading an absent property is not an error.
+  //
+  // Values come from argv, dropping yargs' own `_` and `$0` and the hyphenated spellings that
+  // duplicate the camelCase ones.
+  const YARGS_INTERNAL = new Set(['_', '$0']);
+  const options = Object.fromEntries(
+    Object.entries(argv).filter(([key]) => !YARGS_INTERNAL.has(key) && !key.includes('-'))
+  );
+
+  // An option that is declared, unset and has no default is absent from argv entirely.  Add it so
+  // every option is present; reading one is undefined either way.  Best-effort: `getOptions` is
+  // yargs' own accessor, and losing it would cost only the completeness of the object.
+  for (const declared of Object.keys(parser.getOptions().key)) {
+    const key = toCamelCase(declared);
+    if (key !== 'help' && !(key in options)) {
+      options[key] = undefined;
+    }
+  }
+
+  return options;
 }
 
 /**
@@ -364,19 +381,19 @@ function collectModes(components) {
  */
 function getComparisons(options, oldComponents, newComponents) {
   // If specific version comparisons are requested, use those
-  if (options.fromVersion && options.toVersion) {
+  if (options.twFrom && options.twTo) {
     return [{
-      oldVersion: parseInt(options.fromVersion, 10),
-      newVersion: parseInt(options.toVersion, 10),
-      label: `v${options.fromVersion} -> v${options.toVersion}`
+      oldVersion: parseInt(options.twFrom, 10),
+      newVersion: parseInt(options.twTo, 10),
+      label: `v${options.twFrom} -> v${options.twTo}`
     }];
   }
 
-  if (options.version) {
+  if (options.tw) {
     return [{
-      oldVersion: parseInt(options.version, 10),
-      newVersion: parseInt(options.version, 10),
-      label: `v${options.version}`
+      oldVersion: parseInt(options.tw, 10),
+      newVersion: parseInt(options.tw, 10),
+      label: `v${options.tw}`
     }];
   }
 
