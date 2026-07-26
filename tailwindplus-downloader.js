@@ -294,13 +294,6 @@ function isEcommerceUrl(url) {
 }
 
 /**
- * Reduces a format list to one entry per framework and version, dropping the mode.  Components
- * that have no mode render identically in all three, so a pass per mode fetches the same content.
- *
- * @param {Format[]} formats - Formats to reduce
- * @returns {Format[]} One format per framework/version pair, in the order given
- */
-/**
  * Picks one record per downloadable component.
  *
  * Every component is listed twice, as a light and a dark preview record with its own uuid and its
@@ -329,6 +322,13 @@ function selectFreeComponents(components) {
   return [...byName.values()];
 }
 
+/**
+ * Reduces a format list to one entry per framework and version, dropping the mode.  Components
+ * that have no mode render identically in all three, so a pass per mode fetches the same content.
+ *
+ * @param {Format[]} formats - Formats to reduce
+ * @returns {Format[]} One format per framework/version pair, in the order given
+ */
 function uniqueFrameworkVersions(formats) {
   const seen = new Set();
   return formats.filter(format => {
