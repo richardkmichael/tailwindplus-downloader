@@ -416,19 +416,27 @@ function compareModes(a, b) {
 }
 
 /**
- * Extract all component paths from the nested structure
+ * Sorted paths of the components satisfying the given test
  */
-function getComponentPaths(components) {
+function componentPathsWhere(components, include) {
   const paths = [];
 
   forEachComponent(components, (componentData, { category, subcategory, group, component }) => {
-    // Only include objects that have a snippets property
-    if (componentData && typeof componentData === 'object' && componentData.snippets) {
+    if (include(componentData)) {
       paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
     }
   });
 
   return paths.sort();
+}
+
+/**
+ * Extract all component paths from the nested structure
+ */
+function getComponentPaths(components) {
+  // Only include objects that have a snippets property
+  return componentPathsWhere(components, (componentData) =>
+    componentData && typeof componentData === 'object' && componentData.snippets);
 }
 
 /**
@@ -439,15 +447,7 @@ function getComponentPaths(components) {
  * @returns {string[]} Sorted component paths
  */
 function getComponentPathsAtFormat(components, format) {
-  const paths = [];
-
-  forEachComponent(components, (componentData, { category, subcategory, group, component }) => {
-    if (findSnippetCode(componentData, format)) {
-      paths.push(`${category} > ${subcategory} > ${group} > ${component}`);
-    }
-  });
-
-  return paths.sort();
+  return componentPathsWhere(components, (componentData) => findSnippetCode(componentData, format));
 }
 
 /**
