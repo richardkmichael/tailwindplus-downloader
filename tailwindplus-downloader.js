@@ -755,7 +755,6 @@ class TailwindPlusDownloader {
     this.mainPage = null;
   }
 
-
   /**
    * Validates whether the current session is authenticated with TailwindPlus.
    * Reads auth state from the Inertia.js data-page JSON in the server-rendered response.
@@ -1199,7 +1198,6 @@ class TailwindPlusDownloader {
     }
   }
 
-
   /**
    * Detects the account's current format (e.g., html-v3-system) by fetching a probe page and
    * reading the format from its page data.
@@ -1444,7 +1442,6 @@ class TailwindPlusDownloader {
       this.logger.warn(`Failed to restore initial format ${this.initialFormat}. ${error.message}`);
     }
   }
-
 
   /**
    * Populates the job queue with one job per discovered URL.
@@ -2141,8 +2138,7 @@ function parseArgs() {
     .example('$0 --workers=5 --debug', 'Slower download with debug logging')
     .epilog('Options can be specified as --option=value or --option value')
     .help('help')
-    .alias('help', 'h')
-    ;
+    .alias('help', 'h');
 
   const argv = parser.parseSync();
 
