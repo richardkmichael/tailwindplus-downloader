@@ -1653,12 +1653,9 @@ class TailwindPlusDownloader {
         savedMessage = `Download complete! Components saved to ${this.options.output} (${sizeKB} KB)`;
       }
 
-      const capturedSuffix = this.capturedComponentCount === null ?
-        '' :
-        ` Captured ${this.capturedComponentCount}.`;
-
       const messageLines = [
-        `Discovered ${this.urlCount} URLs with ${this.componentCount} individual components.${capturedSuffix}`,
+        `Discovered ${this.urlCount} URLs with ${this.componentCount} individual components.` +
+          ` Captured ${this.capturedComponentCount}.`,
         savedMessage,
         `Duration: ${durationSec}s`
       ];
@@ -1685,10 +1682,8 @@ class TailwindPlusDownloader {
     }
 
     // A browser is normally closed as soon as login finishes, so one is open here only if the run
-    // ended during login.
-    if (this.browser) {
-      await this._closeBrowser();
-    }
+    // ended during login; _closeBrowser is a no-op otherwise.
+    await this._closeBrowser();
 
     for (const context of [...this.retiredRequestContexts, this.requestContext]) {
       if (!context) {
