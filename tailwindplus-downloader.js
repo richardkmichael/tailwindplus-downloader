@@ -299,6 +299,35 @@ function isEcommerceUrl(url) {
  * @param {Format[]} formats - Formats to reduce
  * @returns {Format[]} One format per framework/version pair, in the order given
  */
+/**
+ * Picks one record per downloadable component.
+ *
+ * Every component is listed twice, as a light and a dark preview record with its own uuid and its
+ * own snippet.  Exactly one is wanted per component, since the format is then driven across all of
+ * them anyway, and two records of the same name would collide in the output.  The light record is
+ * preferred so the captured set matches what the browser-driven path produced; taking whichever is
+ * flagged means a component marked downloadable only in its dark record is captured rather than
+ * silently skipped.
+ *
+ * @param {Object[]} components - Components from a subcategory's page data
+ * @returns {Object[]} One record per downloadable component
+ */
+function selectFreeComponents(components) {
+  const byName = new Map();
+
+  for (const component of components) {
+    if (!component.downloadable) {
+      continue;
+    }
+    const chosen = byName.get(component.name);
+    if (!chosen || (chosen.preview !== 'light' && component.preview === 'light')) {
+      byName.set(component.name, component);
+    }
+  }
+
+  return [...byName.values()];
+}
+
 function uniqueFrameworkVersions(formats) {
   const seen = new Set();
   return formats.filter(format => {
@@ -1934,23 +1963,7 @@ class Worker {
 
     this.downloader._recordSubcategoryDescription(product, category, subcategory);
 
-    // Every component is listed twice, as a light and a dark preview record with its own uuid and
-    // its own snippet.  Exactly one is wanted per component, since the format is then driven
-    // across all of them anyway, and two records of the same name would collide in the output.
-    // The light record is preferred so the captured set matches what the browser path produced;
-    // taking whichever is flagged means a component marked downloadable only in its dark record
-    // is captured rather than silently skipped.
-    const freeByName = new Map();
-    for (const component of subcategory.components) {
-      if (!component.downloadable) {
-        continue;
-      }
-      const chosen = freeByName.get(component.name);
-      if (!chosen || (chosen.preview !== 'light' && component.preview === 'light')) {
-        freeByName.set(component.name, component);
-      }
-    }
-    const freeComponents = [...freeByName.values()];
+    const freeComponents = selectFreeComponents(subcategory.components);
     if (freeComponents.length === 0) {
       this.logger.debug(`No downloadable components on ${url}`);
       return {};
@@ -1981,6 +1994,21 @@ class Worker {
         const snippets = snippetsByUuid.get(component.uuid);
         if (snippets && component.snippet) {
           snippets.push(this._shapeSnippet(component.snippet));
+        }
+      }
+    }
+
+    // The uuid tying a format request to its component in the response is TailwindPlus-internal
+    // and guaranteed nothing: if it changed underneath a page, the responses would stop matching
+    // and the snippets would quietly come up short.  Fail the job instead, so it is retried and
+    // ultimately reported, rather than writing a component with formats missing.
+    if (!this.downloader.interrupted) {
+      for (const component of freeComponents) {
+        const captured = snippetsByUuid.get(component.uuid).length;
+        if (captured !== formats.length) {
+          throw new DownloaderError(
+            `Captured ${captured} of ${formats.length} formats for "${component.name}" on ${url}`
+          );
         }
       }
     }
