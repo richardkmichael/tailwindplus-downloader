@@ -175,6 +175,44 @@ The discovery page at the base URL carries the whole hierarchy in its page data,
 prose descriptions TailwindPlus publishes for each product.  Subcategory descriptions appear on the
 component pages instead, which is why the two are captured at different points in a run.
 
+## Poking at the site by hand
+
+When something changes upstream, the fastest way to see what is going on is to open a component page
+in a browser, log in, and read the page data from the console.  These are the same structures the
+downloader parses.
+
+```javascript
+const data = JSON.parse(document.querySelector('#app').dataset.page);
+
+// The discovery page carries the whole hierarchy; a component page carries one subcategory.
+data.props.products;                                    // products, on the discovery page
+data.props.subcategory;                                 // this page's subcategory
+data.props.subcategory.components;                      // its components, two records each
+data.props.subcategory.category.product.name;           // where this page sits
+```
+
+What format the page is currently in, per component:
+
+```javascript
+const format = ({ snippet: { name, version, mode } }) => `${name}-v${version}-${mode}`;
+data.props.subcategory.components.map(format);
+```
+
+Which components are free, and whether the page has modes at all:
+
+```javascript
+data.props.subcategory.components.filter(c => c.downloadable).map(c => [c.name, c.preview]);
+data.props.subcategory.components.some(c => c.snippet && c.snippet.mode !== null);
+```
+
+Note that the attribute is only fresh on a full load.  After any in-page interaction it still holds
+the original response, so reload before reading it again.
+
+Traces are the other tool, from `--debug-trace`.  In the Playwright trace viewer, turn on absolute
+timestamps so actions and network requests can be lined up against a `--log` file, and use
+right-click on a navigation action to jump to its network requests.  Traces record the login, so
+they contain credentials and session tokens in plaintext -- never commit or share one.
+
 ## What would break this
 
 The site is not a documented API, so it is worth knowing what the tool is exposed to:
