@@ -382,6 +382,40 @@ function subcategoryOfRequiredFormat(pageData, url, expectedFormat) {
   return subcategory;
 }
 
+/**
+ * Sends the format-setting PUT through the given HTTP client, authenticated with the XSRF token
+ * from the client's own cookie jar.  Authenticated it sets the account-wide format; with a `uuid`
+ * in the data it sets one component's format for the calling session.
+ *
+ * The response redirects back to the page the format was set from, which there is no reason to
+ * follow: every caller verifies with a read of its own.
+ *
+ * @param {APIRequestContext} requestContext - HTTP client whose session the format is set for
+ * @param {Object} data - Request body; `snippet_lang` names the format
+ * @returns {Promise<APIResponse>} The response
+ * @throws {DownloaderError} When the client has no XSRF-TOKEN cookie, or the request is rejected
+ */
+async function putSnippetLanguage(requestContext, data) {
+  const state = await requestContext.storageState();
+  const xsrfToken = state.cookies.find(cookie => cookie.name === 'XSRF-TOKEN');
+  if (!xsrfToken) {
+    throw new DownloaderError('no XSRF-TOKEN cookie');
+  }
+
+  const response = await requestContext.put(CONFIG.urls.language, {
+    headers: { 'x-xsrf-token': decodeURIComponent(xsrfToken.value) },
+    data,
+    maxRedirects: 0,
+    timeout: CONFIG.timeout
+  });
+
+  if (response.status() >= 400) {
+    throw new DownloaderError(`request rejected with HTTP ${response.status()}`);
+  }
+
+  return response;
+}
+
 function createConfig() {
   const base = 'https://tailwindcss.com';
 
@@ -1388,26 +1422,7 @@ class TailwindPlusDownloader {
     this.logger.debug(`Setting format: ${targetFormat}`);
 
     try {
-      // From the HTTP client's own jar: it is what issues the request, and there may be no
-      // browser context at all.
-      const state = await this.requestContext.storageState();
-      const xsrfToken = state.cookies.find(cookie => cookie.name === 'XSRF-TOKEN');
-      if (!xsrfToken) {
-        throw new DownloaderError('no XSRF-TOKEN cookie');
-      }
-
-      // The response redirects back to the page it was set from, which there is no reason to
-      // follow: the format is verified below with a request of our own.
-      const response = await this.requestContext.put(CONFIG.urls.language, {
-        headers: { 'x-xsrf-token': decodeURIComponent(xsrfToken.value) },
-        data: { snippet_lang: targetFormat.toString() },
-        maxRedirects: 0,
-        timeout: CONFIG.timeout
-      });
-
-      if (response.status() >= 400) {
-        throw new DownloaderError(`request rejected with HTTP ${response.status()}`);
-      }
+      await putSnippetLanguage(this.requestContext, { snippet_lang: targetFormat.toString() });
 
       // Verify it persisted server-side rather than trusting the response: a fresh GET must
       // render every component in the target format.
@@ -1911,23 +1926,10 @@ class Worker {
    * @throws {DownloaderError} When the request is rejected
    */
   async _setUnauthenticatedFormat(uuid, format) {
-    const state = await this.requestContext.storageState();
-    const xsrfToken = state.cookies.find(cookie => cookie.name === 'XSRF-TOKEN');
-    if (!xsrfToken) {
-      throw new DownloaderError('No XSRF-TOKEN cookie; cannot set the component format');
-    }
-
-    // The response redirects back to the page, which there is no reason to follow: the caller
-    // reads the page itself, once, after setting every component on it.
-    const response = await this.requestContext.put(CONFIG.urls.language, {
-      headers: { 'x-xsrf-token': decodeURIComponent(xsrfToken.value) },
-      data: { uuid, snippet_lang: format.toString() },
-      maxRedirects: 0,
-      timeout: CONFIG.timeout
-    });
-
-    if (response.status() >= 400) {
-      throw new DownloaderError(`Setting format ${format} on ${uuid} failed with HTTP ${response.status()}`);
+    try {
+      await putSnippetLanguage(this.requestContext, { uuid, snippet_lang: format.toString() });
+    } catch (error) {
+      throw new DownloaderError(`Setting format ${format} on ${uuid} failed: ${error.message}`);
     }
   }
 
