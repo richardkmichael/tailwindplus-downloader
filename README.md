@@ -22,7 +22,8 @@ Output is written to `tailwindplus-components-[TIMESTAMP].json` in the current d
 
 ## Setup
 
-`npx` requires no installation.  Playwright Chromium requires system dependencies to be installed.
+`npx` requires no installation.  A browser is needed only to log in, so Playwright Chromium and its
+system dependencies are required for a first run, and for any run whose saved session has expired.
 
 To use the agent skill, clone the repo and symlink, or copy the
 [`contrib/tailwind-plus/`](contrib/tailwind-plus/) directory from GitHub:
@@ -175,6 +176,12 @@ npx github:richardkmichael/tailwindplus-downloader#latest --output=./twp --overw
 npx github:richardkmichael/tailwindplus-downloader#latest --credentials ./my-credentials.json
 npx github:richardkmichael/tailwindplus-downloader#latest --session ./my-session.json
 
+# Times to retry a page that fails to download (default 3)
+npx github:richardkmichael/tailwindplus-downloader#latest --retries 5
+
+# Print the resolved configuration and exit
+npx github:richardkmichael/tailwindplus-downloader#latest --show-config
+
 # Unauthenticated (downloads free/demo components only)
 npx github:richardkmichael/tailwindplus-downloader#latest --unauthenticated
 ```
@@ -237,8 +244,9 @@ they are skipped, and the run reports how many were skipped and why.
 
 ## Dependencies
 
-- Playwright Chromium system dependencies
 - Node.js and npm
+- Playwright Chromium and its system dependencies — for logging in; a run with a saved session
+  launches no browser
 - git — optional, provides better diffs (recommended)
 
 ## Data Format
@@ -351,15 +359,20 @@ tailwindplus-components-[TIMESTAMP]/
 
 ## How It Works
 
-The script uses Playwright automation with workers to handle the React/InertiaJS site.  It includes
-robust authentication handling and waiting to ensure reliable data extraction.
+TailwindPlus renders each page's component data into the HTML as JSON, so the code is read out of
+the response rather than off the rendered page.  Almost every step is a plain HTTP request.
 
 1. Prompts for credentials, if not provided, and logs in to establish a session
-2. Saves the session information automatically, to use it on the next run -- no need to store credentials
-3. Discovers the complete TailwindPlus component hierarchy as a collection of pages
-4. Uses on-page controls to iterate through the "format": framework, TailwindCSS version, and mode
-5. Creates workers to process multiple component pages simultaneously
-6. Component data is organized into a hierarchy (JSON file or directory) matching the site organization
+2. Saves the session automatically, to use it on the next run -- no need to store credentials
+3. Reads the component hierarchy from the discovery page
+4. Sets the format -- framework, TailwindCSS version and mode -- with a single request
+5. Runs workers to fetch component pages in parallel
+6. Organizes the result into a hierarchy (JSON file or directory) matching the site
+
+A browser is launched only for the login form.  A run with a saved session never starts one.
+
+`--unauthenticated` works the same way, except the format applies per component rather than to the
+whole account, so every format of a page is collected in one visit.
 
 ## Development
 
@@ -377,10 +390,19 @@ npm run lint:fix
 
 ### Testing
 
-The smoke test covers permutations of output options (JSON and directory formats, `--overwrite`,
-`--log`, default timestamped paths) using actual downloads.  Takes ~7 minutes.  Requires an
-authenticated session or credentials file.
+Unit tests cover the pure logic -- entity decoding, page-data parsing, format selection and
+sorting -- and need no network.
 
 ```bash
-npm run smoke-test
+npm run test:unit
+```
+
+The smoke tests cover option permutations (JSON and directory output, `--overwrite`, `--log`,
+default timestamped paths, interrupts) using real downloads.  The ones that need no login run
+against free sample components; the rest skip themselves unless a session or credentials file is
+present, so the suite is usable without an account.
+
+```bash
+npm run smoke-test    # smoke tests only
+npm test              # unit tests, then smoke tests
 ```
