@@ -1,6 +1,6 @@
 {
   "name": "tailwindplus-downloader",
-  "version": "3.3.0",
+  "version": "3.4.0-rc.1",
   "type": "module",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || ^26.0.0"
