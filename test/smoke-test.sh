@@ -661,6 +661,26 @@ test_diff_component_counts() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+# An option accepted on the command line but not carried through to the run is invisible: reading
+# an absent property is not an error, so the value simply behaves as though it were never passed.
+# --show-config is where that becomes observable, so it is asserted here.
+test_options_reach_the_run() {
+  local dir="$RUN_DIR/18-options-carried"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  # shellcheck disable=SC2016 # $1/$2 expand inside the bash -c subshell, not here.
+  run_cmd 0 "" bash -c 'node "$1" --show-config --unauthenticated --retries=7 --workers=3 > "$2" 2>&1' \
+    _ "$ROOT_DIR/tailwindplus-downloader.js" "$dir/config.json"
+
+  check_log_contains "retries carried through" "$dir/config.json" '"retries": 7'
+  check_log_contains "workers carried through" "$dir/config.json" '"workers": 3'
+  check_log_contains "unauthenticated carried through" "$dir/config.json" '"unauthenticated": true'
+  check_log_contains "unset options listed" "$dir/config.json" '"debugTrace": null'
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # ── Test registry and runner ─────────────────────────────────────────────────
 
 TESTS=(
@@ -681,6 +701,7 @@ TESTS=(
   "URL file with no URLs aborts|test_url_file_empty"
   "interrupt shuts down cleanly|test_interrupt_shuts_down"
   "diff: component counts reported|test_diff_component_counts"
+  "options reach the run|test_options_reach_the_run"
 )
 
 echo -e "${BOLD}=== TailwindPlus Downloader Smoke Tests ===${NC}"
