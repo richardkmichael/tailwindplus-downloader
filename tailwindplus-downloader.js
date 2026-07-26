@@ -2067,6 +2067,11 @@ function parseArgs() {
       default: 15,
       describe: 'Number of pages to download in parallel'
     })
+    .option('show-config', {
+      type: 'boolean',
+      default: false,
+      describe: 'Print the resolved configuration and exit'
+    })
     .option('retries', {
       type: 'number',
       requiresArg: true,
@@ -2153,6 +2158,7 @@ function parseArgs() {
     overwrite: argv.overwrite,
     workers: argv.workers,
     retries: argv.retries,
+    showConfig: argv.showConfig,
     session: argv.session || CONFIG.session,
     credentials: argv.credentials || CONFIG.credentials,
     log: argv.log,
@@ -2182,6 +2188,17 @@ async function main() {
     } else {
       options.log = options.output + '.log';
     }
+  }
+
+  if (options.showConfig) {
+    // Written to stdout rather than through the logger: this is the output that was asked for,
+    // like --help, and must not be prefixed or diverted into a --log file.
+    //
+    // Unset options are rendered as null rather than dropped, so every option and its state is
+    // visible; an option missing entirely would otherwise look the same as one left at a default.
+    const withUnset = (key, value) => (value === undefined ? null : value);
+    process.stdout.write(`${JSON.stringify({ constants: CONFIG, options }, withUnset, 2)}\n`);
+    return;
   }
 
   const downloader = new TailwindPlusDownloader(options);
