@@ -12,6 +12,7 @@ import {
   isEcommerceUrl,
   selectFreeComponents,
   componentsHaveModes,
+  retryDecision,
   uniqueFrameworkVersions,
   subcategoryOfRequiredFormat,
   sortSnippetsRecursively,
@@ -89,6 +90,29 @@ describe('selectFreeComponents', () => {
   test('keeps distinct components apart', () => {
     const other = { name: 'Footer', preview: 'light', downloadable: true, uuid: 'c' };
     assert.equal(selectFreeComponents([light, dark, other]).length, 2);
+  });
+});
+
+describe('retryDecision', () => {
+  test('retries while attempts remain', () => {
+    assert.equal(retryDecision(0, 3), 'retry');
+    assert.equal(retryDecision(2, 3), 'retry');
+  });
+
+  test('gives up once the limit is reached', () => {
+    assert.equal(retryDecision(3, 3), 'exhausted');
+    assert.equal(retryDecision(4, 3), 'exhausted');
+  });
+
+  test('--retries=0 means no retry at all', () => {
+    assert.equal(retryDecision(0, 0), 'exhausted');
+  });
+
+  test('an absent limit gives up rather than retrying forever', () => {
+    // --retries was once declared but never carried through, leaving the limit undefined.  The
+    // comparison was false for every page, so nothing was ever retried and each failure went
+    // straight to exhausted -- silently, because that is also what a correct limit eventually says.
+    assert.equal(retryDecision(0, undefined), 'exhausted');
   });
 });
 

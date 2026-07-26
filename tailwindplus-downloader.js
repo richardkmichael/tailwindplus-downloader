@@ -44,6 +44,9 @@ const LogLevel = {
 // Conventional exit code for a process ended by SIGINT: 128 + the signal number.
 const INTERRUPT_EXIT_CODE = 130;
 
+// A run that finished but skipped pages it could not download.
+const INCOMPLETE_EXIT_CODE = 1;
+
 class Logger {
   constructor(options = {}) {
     this.level = options.debug ? LogLevel.DEBUG : LogLevel.INFO;
@@ -344,6 +347,21 @@ function componentsHaveModes(components) {
   return components.some(component => component.snippet && component.snippet.mode !== null);
 }
 
+/**
+ * Decides what becomes of a failed page.
+ *
+ * Separated from the queue and the logging so the boundary can be tested: an off-by-one here is
+ * invisible in a run, since a page that is silently never retried looks the same as one that
+ * succeeded first time.
+ *
+ * @param {number} retryCount - Attempts already made for this page
+ * @param {number} retryLimit - Attempts allowed, from --retries
+ * @returns {'retry'|'exhausted'} Whether the page is queued again
+ */
+function retryDecision(retryCount, retryLimit) {
+  return retryCount < retryLimit ? 'retry' : 'exhausted';
+}
+
 function uniqueFrameworkVersions(formats) {
   const seen = new Set();
   return formats.filter(format => {
@@ -564,6 +582,10 @@ class TailwindPlusDownloader {
     this.componentData = {};
     this.componentCount = 0;
 
+    // Pages that exhausted their retries.  A run that skipped pages has produced incomplete
+    // output, which the exit code has to say.
+    this.failedUrls = [];
+
     // Human-authored prose TailwindPlus ships alongside the components.  Kept beside the
     // component tree rather than on its nodes, so the tree stays a pure name-keyed tree.
     // Subcategories are keyed by the dotted "product.category.subcategory" path.
@@ -641,6 +663,16 @@ class TailwindPlusDownloader {
         }
 
         succeeded = true;
+
+        // The output is written either way -- a partial catalogue is still worth keeping -- but a
+        // run that skipped pages has not done what was asked, and must not report success.
+        if (this.failedUrls.length > 0) {
+          this.logger.error(`${this.failedUrls.length} page(s) could not be downloaded; the output is incomplete:`);
+          for (const url of this.failedUrls) {
+            this.logger.error(`  ${url}`);
+          }
+          exitCode = INCOMPLETE_EXIT_CODE;
+        }
       }
     } catch (error) {
       // Logged here rather than after teardown, which closes the logger.  An unexpected error is
@@ -1562,13 +1594,14 @@ class TailwindPlusDownloader {
 
       // Re-queue failed job as pending, for retry, if under the retry limit.  This is the only
       // retry the user chooses; re-authentication attempts bound a session loop and stay internal.
-      if (job.retryCount < this.options.retries) {
+      if (retryDecision(job.retryCount, this.options.retries) === 'retry') {
         job.retryCount++;
         job.status = 'pending';
         this.jobQueue.push(job);
         this.logger.warn(`Retrying ${job.url} (attempt ${job.retryCount}/${this.options.retries})`);
       } else {
         this.logger.error(`Max retries exceeded for ${job.url}, skipping`);
+        this.failedUrls.push(job.url);
       }
     }
   }
@@ -2222,6 +2255,7 @@ export {
   isEcommerceUrl,
   selectFreeComponents,
   componentsHaveModes,
+  retryDecision,
   uniqueFrameworkVersions,
   subcategoryOfRequiredFormat,
   sortSnippetsRecursively,
