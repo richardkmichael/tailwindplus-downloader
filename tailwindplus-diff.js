@@ -12,6 +12,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
@@ -829,4 +830,27 @@ async function main() {
   await compareComponents(oldComponents, newComponents, options);
 }
 
-main().catch(console.error);
+// Exported for unit tests.  These are the pure parts: no file reading, no subprocess, so they can
+// be called directly rather than through a comparison run.
+export {
+  parseFormat,
+  formatName,
+  validateOptions,
+  parseArgs,
+  getComparisons,
+  getComponentPaths,
+  getComponentPathsAtFormat,
+  collectModes,
+  skipReason,
+  SKIP_NO_MODES,
+  SKIP_NOT_PRESENT
+};
+
+// Run only when executed, not when imported.  `npm` installs the bin as a symlink, so both sides
+// are resolved to their real paths before comparing.
+const executedDirectly = process.argv[1] &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+
+if (executedDirectly) {
+  main().catch(console.error);
+}
