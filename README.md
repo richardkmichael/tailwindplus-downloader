@@ -15,7 +15,7 @@ Download to a single JSON file (default) or directory tree of components, for mu
 npx github:richardkmichael/tailwindplus-downloader#latest
 ```
 
-Takes ~3-4 minutes. You will be prompted for TailwindPlus credentials; the session is saved
+Takes about a minute. You will be prompted for TailwindPlus credentials; the session is saved
 automatically for re-use.
 
 Output is written to `tailwindplus-components-[TIMESTAMP].json` in the current directory.
@@ -261,7 +261,7 @@ The downloader produces a JSON file with this structure:
   "downloaded_at": "2025-07-14T23:50:56Z",
   "component_count": 33,
   "download_duration": "27.2s",
-  "downloader_version": "2.0.0",
+  "downloader_version": "3.4.0",
   "descriptions": {
     "products": {
       "Marketing": {
