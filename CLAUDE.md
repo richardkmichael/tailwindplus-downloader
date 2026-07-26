@@ -35,6 +35,10 @@ bash test/smoke-test.sh --trace "dir: output with --log"
 
 Trace files land in `<output-basename>.traces/` in the repo root (e.g. `dir.traces/`).  WARNING: traces contain login credentials and session tokens in plaintext — never commit or share them.
 
+In the Playwright trace viewer, turn on absolute timestamps for both actions and network requests
+so they can be lined up against a `--log` file.  Right-click a navigation action and choose "Go to
+Network requests" to jump from an action to the requests it made.
+
 Each test is self-contained in its own numbered subdirectory under `run.PID/` (e.g. `01-json-basic/`, `05-dir-exists-aborts/`).  Each test sets up its own preconditions and writes output to `output.json` or `output/` within its subdir.  Passing tests are cleaned up automatically; only failing test subdirs remain for inspection.  Check the relevant `output.log` file when a test fails.
 
 ## Testing a release tag via npx
