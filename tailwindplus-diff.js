@@ -713,7 +713,10 @@ function skipReason(component, modeRequested) {
 function reportSkipped(skipped, options) {
   const byReason = new Map();
   for (const { path: componentPath, reason } of skipped) {
-    byReason.set(reason, [...(byReason.get(reason) ?? []), componentPath]);
+    if (!byReason.has(reason)) {
+      byReason.set(reason, []);
+    }
+    byReason.get(reason).push(componentPath);
   }
 
   for (const [reason, paths] of byReason) {
