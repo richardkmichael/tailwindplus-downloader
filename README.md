@@ -4,7 +4,8 @@
 > A TailwindPlus license is needed to get the most out of this downloader.
 
 A downloader for TailwindPlus components (HTML, React, Vue) across Tailwind CSS v3 and v4 in
-system, light, and dark modes. Includes a diff tool to compare component versions between downloads.
+system, light, and dark modes. Includes a diff tool to compare any two formats, between downloads or
+within one.
 
 Download to a single JSON file (default) or directory tree of components, for multiple use-cases.
 
@@ -189,8 +190,9 @@ fails jobs with a format mismatch.
 
 ## Diff
 
-Works with the JSON single file output to compare component versions between downloads. The diff
-tool is helpful because TailwindPlus undergoes small fixes for which there is no changelog.
+Works with the JSON single file output to compare components between downloads, and to compare one
+format against another. The diff tool is helpful because TailwindPlus undergoes small fixes for
+which there is no changelog.
 
 ```bash
 # Compare two most recent downloads automatically (assumes default filename)
@@ -205,6 +207,33 @@ npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff 
 # Help
 npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff --help
 ```
+
+### Comparing formats
+
+`--from` and `--to` name a format outright, using the same `framework-vN-mode` names the downloader
+uses in its output and in directory-tree filenames.  Any format can be compared against any other,
+across frameworks, versions and modes, and either side can come from either file.
+
+```bash
+# What a mode changes, within a single download
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff \
+  --file components.json --from html-v4-light --to html-v4-dark
+
+# How two frameworks differ, within a single download
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff \
+  --file components.json --from html-v4-system --to vue-v4-system
+
+# One format, between two downloads
+npx --package=github:richardkmichael/tailwindplus-downloader#latest -- twp-diff \
+  --old-file old.json --new-file new.json --from react-v4-dark --to react-v4-dark
+```
+
+`--file` reads both sides from one download.  `--from` and `--to` replace `--tw`, `--tw-from`,
+`--tw-to` and `--framework`, which continue to work on their own.
+
+A format written without a mode, `html-v4`, names the mode-less format.  eCommerce components are
+downloaded that way and exist in 6 formats rather than 18, so asking a mode of them cannot match:
+they are skipped, and the run reports how many were skipped and why.
 
 ## Dependencies
 
