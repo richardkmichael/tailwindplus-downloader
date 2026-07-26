@@ -408,7 +408,7 @@ function createConfig() {
       language: `${base}/plus/ui-blocks/language`
     },
 
-    // Lower the default timeout to notify sooner if actions are failing.
+    // Lower the default timeout to notify sooner if requests are failing.
     timeout: 10000,
 
     // Times a failed page is retried, and the default for --retries.
@@ -648,11 +648,12 @@ class TailwindPlusDownloader {
   }
 
   /**
-   * Initializes Playwright browser with configuration and session management
-   * Sets up tracing directory if enabled, launches browser, and loads saved session
-   * `session` is a filename for a Playwright `browserContext.storageState` file (saved after successful login)
+   * Prepares the run's HTTP client and session: sets up the tracing directory if enabled, opens
+   * the request context from any saved session, and logs in when the session is missing or
+   * invalid.  Unauthenticated mode needs no login and stops at the request context.
+   * `session` is a filename for a Playwright `storageState` file (saved after successful login)
    *
-   * @throws {Error} When browser launch fails or session loading fails
+   * @throws {DownloaderError} When login is needed and fails
    */
   async _initializeSession() {
     // Set up tracing directory if tracing is enabled
@@ -757,13 +758,11 @@ class TailwindPlusDownloader {
 
   /**
    * Validates whether the current session is authenticated with TailwindPlus.
-   * Reads auth state from the Inertia.js data-page JSON on div#app, which is
-   * reliable regardless of viewport size or responsive layout changes.
+   * Reads auth state from the Inertia.js data-page JSON in the server-rendered response.
    * The session can eventually expire, depending on TailwindPlus policy.  When this occurs the
    * session is `invalid`, and credentials will be prompted for again.
    *
    * @returns {Promise<boolean>} True if session is valid (user is logged in)
-   * @throws {DownloaderError} When navigation to TailwindPlus fails
    */
   async _validateSession() {
     this.logger.debug('Validating session');
@@ -1166,7 +1165,7 @@ class TailwindPlusDownloader {
    * cannot disturb, so concurrent reads are safe.
    *
    * On a mid-run session expiry (login redirect, or an unauthenticated data-page) it
-   * re-authenticates and retries rather than failing, up to `maxRetries` re-auth attempts.  A
+   * re-authenticates and retries rather than failing, up to `CONFIG.reauthAttempts` times.  A
    * SessionError escapes only when the session cannot be restored.
    *
    * @param {string} url - Page URL to fetch
@@ -1202,9 +1201,8 @@ class TailwindPlusDownloader {
 
 
   /**
-   * Detects the current format/mode of TailwindPlus components (e.g., html-v3-system).
-   * Navigates to the first URL and determines the format from the current values of the on-page form controls.
-   * See `createConfig()` for CSS selectors and downloaded formats (all).
+   * Detects the account's current format (e.g., html-v3-system) by fetching a probe page and
+   * reading the format from its page data.
    *
    * @returns {Promise<Format>} Detected format object
    * @throws {DownloaderError} When no URLs available or format detection fails
@@ -1428,9 +1426,6 @@ class TailwindPlusDownloader {
   /**
    * Restores the account-level format captured at the start of the run.
    *
-   * `_setFormat` re-reads the live format and returns early when it already matches, so a run whose
-   * last pass happened to end on the initial format costs a page load and changes nothing.
-   *
    * A failed restore is logged and swallowed.  It must not fail an otherwise successful run, nor
    * replace the error that ended a failed one.
    */
@@ -1539,8 +1534,7 @@ class TailwindPlusDownloader {
       // Report only what is decided here: whether the job is retried.
 
       // Re-queue failed job as pending, for retry, if under the retry limit.  This is the only
-      // retry the user chooses; navigation retries work around a known intermittent Playwright
-      // fault and re-authentication attempts bound a session loop, so both stay internal.
+      // retry the user chooses; re-authentication attempts bound a session loop and stay internal.
       if (job.retryCount < this.options.retries) {
         job.retryCount++;
         job.status = 'pending';
@@ -1727,13 +1721,12 @@ class Worker {
   /**
    * Starts the worker and begins processing jobs from the downloader's job queue.
    * Authenticated jobs are plain HTTP GETs through the downloader's request context; only
-   * unauthenticated mode creates a browser context and page, since its extraction drives
-   * on-page controls.
+   * unauthenticated mode opens a request context of its own, for its per-session format state.
    *
    * If a job (URL to download in the current format) fails, it is returned to the main downloader,
-   * and re-queued to be attempted again; up to maxRetries.  A job generally fails with a timeout
-   * error caused by network failure.  Some such failures may be successfully retried, however if
-   * `maxRetries` is reached the script must be re-run, because "partial downloads" are not
+   * and re-queued to be attempted again; up to the --retries limit.  A job generally fails with a
+   * timeout error caused by network failure.  Some such failures may be successfully retried,
+   * however if the limit is reached the script must be re-run, because "partial downloads" are not
    * supported.  A mid-run session expiry is re-authenticated and resumed automatically; a
    * SessionError aborts the run only when the session cannot be restored.
    *
@@ -1754,7 +1747,7 @@ class Worker {
     }
 
     // Job processing loop.  An interrupt stops the worker taking new jobs; the job already in
-    // flight is allowed to finish so the browser is not torn down mid-navigation.
+    // flight is allowed to finish rather than being abandoned mid-request.
     while (!this.downloader.interrupted && this.downloader.jobQueue.length > 0) {
       const job = this.downloader.jobQueue.shift();
       if (!job) break;
@@ -2030,9 +2023,8 @@ class Worker {
   }
 
   /**
-   * Stops the worker and performs cleanup
-   * Stops tracing if enabled, closes the browser context and pages (unauthenticated mode
-   * only; authenticated workers hold no browser resources), and resets state
+   * Stops the worker, disposing the unauthenticated request context if one was opened
+   * (authenticated workers hold no resources of their own)
    */
   async stop() {
     if (this.requestContext) {
