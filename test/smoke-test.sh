@@ -635,6 +635,32 @@ test_interrupt_shuts_down() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+# The diff tool reads component trees out of JSON, so it is exercised against files written here
+# rather than downloads: no network, and the counts are known rather than whatever the site holds.
+test_diff_component_counts() {
+  local dir="$RUN_DIR/17-diff-counts"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  local snippet='{"name":"html","language":"html","version":4,"mode":"light","code":"<div></div>"}'
+  printf '{"component_count":1,"tailwindplus":{"Marketing":{"Sections":{"Heroes":{"One":{"name":"One","snippets":[%s]}}}}}}\n' \
+    "$snippet" > "$dir/old.json"
+  printf '{"component_count":2,"tailwindplus":{"Marketing":{"Sections":{"Heroes":{"One":{"name":"One","snippets":[%s]},"Two":{"name":"Two","snippets":[%s]}}}}}}\n' \
+    "$snippet" "$snippet" > "$dir/new.json"
+
+  # Run from the test directory: the tool writes a `diffs/` directory beside its working
+  # directory, which should not land in the repo root.
+  # shellcheck disable=SC2016 # $1..$4 expand inside the bash -c subshell, not here.
+  run_cmd 0 "" bash -c 'cd "$1" && node "$2" --old-file=old.json --new-file=new.json > "$3" 2>&1' \
+    _ "$dir" "$ROOT_DIR/tailwindplus-diff.js" "output.txt"
+
+  check_log_contains "old count reported" "$dir/output.txt" '(1 components)'
+  check_log_contains "new count reported" "$dir/output.txt" '(2 components)'
+  check_log_contains "delta reported" "$dir/output.txt" '+1'
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # ── Test registry and runner ─────────────────────────────────────────────────
 
 TESTS=(
@@ -654,6 +680,7 @@ TESTS=(
   "unauthenticated: dir output format|test_unauth_dir_output"
   "URL file with no URLs aborts|test_url_file_empty"
   "interrupt shuts down cleanly|test_interrupt_shuts_down"
+  "diff: component counts reported|test_diff_component_counts"
 )
 
 echo -e "${BOLD}=== TailwindPlus Downloader Smoke Tests ===${NC}"
