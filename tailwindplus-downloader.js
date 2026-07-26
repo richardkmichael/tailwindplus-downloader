@@ -1710,9 +1710,7 @@ class TailwindPlusDownloader {
 class Worker {
   constructor(id, downloader, logger) {
     this.id = id;
-    this.context = null;
     this.downloader = downloader;
-    this.page = null;
     this.state = 'stopped';
 
     // Unauthenticated reads go over plain HTTP.  The context is per worker because the site
@@ -2037,24 +2035,6 @@ class Worker {
    * only; authenticated workers hold no browser resources), and resets state
    */
   async stop() {
-    if (this.context) {
-      // Stop tracing if enabled
-      if (this.downloader.options.debugTrace) {
-        await stopTracing(this.context, this.downloader.tracesDir, `worker-${this.id}-unauthenticated`);
-      }
-
-      // This will close all pages in the context.  An interrupt delivered to the process group
-      // reaches the browser too, so the context may already be gone; teardown must not throw.
-      try {
-        await this.context.close();
-      } catch (error) {
-        this.logger.debug(`Context already closed: ${error.message}`);
-      }
-
-      this.context = null;
-      this.page = null;
-    }
-
     if (this.requestContext) {
       await this.requestContext.dispose();
       this.requestContext = null;
