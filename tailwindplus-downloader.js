@@ -1934,7 +1934,23 @@ class Worker {
 
     this.downloader._recordSubcategoryDescription(product, category, subcategory);
 
-    const freeComponents = subcategory.components.filter(c => c.downloadable && c.preview === 'light');
+    // Every component is listed twice, as a light and a dark preview record with its own uuid and
+    // its own snippet.  Exactly one is wanted per component, since the format is then driven
+    // across all of them anyway, and two records of the same name would collide in the output.
+    // The light record is preferred so the captured set matches what the browser path produced;
+    // taking whichever is flagged means a component marked downloadable only in its dark record
+    // is captured rather than silently skipped.
+    const freeByName = new Map();
+    for (const component of subcategory.components) {
+      if (!component.downloadable) {
+        continue;
+      }
+      const chosen = freeByName.get(component.name);
+      if (!chosen || (chosen.preview !== 'light' && component.preview === 'light')) {
+        freeByName.set(component.name, component);
+      }
+    }
+    const freeComponents = [...freeByName.values()];
     if (freeComponents.length === 0) {
       this.logger.debug(`No downloadable components on ${url}`);
       return {};
