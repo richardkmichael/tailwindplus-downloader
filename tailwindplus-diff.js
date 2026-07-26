@@ -99,6 +99,12 @@ function validateOptions(options) {
     throw new Error('--file reads both sides from one file; it cannot be combined with --old-file or --new-file');
   }
 
+  // Without a format pair there is nothing to compare a file against but itself, which reports
+  // that it is identical to itself -- a confident answer to a question nobody asked.
+  if (given('file') && !given('from')) {
+    throw new Error('--file compares two formats within one download: --from and --to are required');
+  }
+
   if (given('tw') && (given('twFrom') || given('twTo'))) {
     throw new Error('--tw cannot be used with --tw-from/--tw-to');
   }

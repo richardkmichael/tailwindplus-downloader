@@ -727,6 +727,24 @@ test_options_reach_the_run() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
+test_diff_file_needs_formats() {
+  local dir="$RUN_DIR/19-diff-file-formats"
+  mkdir -p "$dir"
+  local fail_before=$FAIL
+
+  printf '{"tailwindplus":{"P":{"C":{"S":{"One":{"name":"One","snippets":[]}}}}}}\n' > "$dir/c.json"
+
+  # Without a format pair the default sweep compares the file against itself and reports that it
+  # is identical, which reads as a successful comparison.
+  # shellcheck disable=SC2016 # $1..$3 expand inside the bash -c subshell, not here.
+  run_cmd 1 "notty" bash -c 'cd "$1" && node "$2" --file=c.json > "$3" 2>&1' \
+    _ "$dir" "$ROOT_DIR/tailwindplus-diff.js" "output.txt"
+
+  check_log_contains "says what is missing" "$dir/output.txt" '\-\-from and \-\-to are required'
+
+  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
+}
+
 # ── Test registry and runner ─────────────────────────────────────────────────
 
 TESTS=(
@@ -749,6 +767,7 @@ TESTS=(
   "diff: component counts reported|test_diff_component_counts"
   "diff: formats within one file|test_diff_formats_within_one_file"
   "options reach the run|test_options_reach_the_run"
+  "diff: --file needs a format pair|test_diff_file_needs_formats"
 )
 
 echo -e "${BOLD}=== TailwindPlus Downloader Smoke Tests ===${NC}"

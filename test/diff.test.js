@@ -84,6 +84,19 @@ describe('validateOptions', () => {
     assert.equal(validateOptions({ from: 'html-v4-light', to: 'html-v4-dark' }), true);
   });
 
+  test('requires a format pair alongside --file', () => {
+    // Without one there is nothing to compare the file against but itself, which the default sweep
+    // does happily and reports as identical.
+    assert.throws(() => validateOptions({ file: 'components.json' }), /--from and --to are required/);
+  });
+
+  test('accepts --file with a format pair', () => {
+    assert.equal(
+      validateOptions({ file: 'components.json', from: 'html-v4-light', to: 'html-v4-dark' }),
+      true
+    );
+  });
+
   test('requires both sides of the format pair', () => {
     assert.throws(() => validateOptions({ from: 'html-v4-light' }), /--from and --to/);
     assert.throws(() => validateOptions({ to: 'html-v4-dark' }), /--from and --to/);
