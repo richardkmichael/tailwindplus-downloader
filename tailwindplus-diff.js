@@ -16,6 +16,10 @@ import { hideBin } from 'yargs/helpers';
 // Configuration
 const DIFF_DIR = 'diffs';
 
+// The axes a component is downloaded across.  Every component carries a snippet for each
+// framework and version; only the mode varies, and eCommerce components have none.
+const FRAMEWORKS = ['html', 'react', 'vue'];
+
 const toCamelCase = (key) => key.replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
 
 /**
@@ -206,9 +210,9 @@ function writeTempFile(content, suffix, framework, safeName) {
 /**
  * Generate diff using git or regular diff
  */
-function generateDiff(oldContent, newContent, outputFile, framework, safeName) {
-  const oldFile = writeTempFile(oldContent, 'old', framework, safeName);
-  const newFile = writeTempFile(newContent, 'new', framework, safeName);
+function generateDiff(oldContent, newContent, outputFile, comparison, safeName) {
+  const oldFile = writeTempFile(oldContent, 'old', comparison.from.framework, safeName);
+  const newFile = writeTempFile(newContent, 'new', comparison.to.framework, safeName);
 
   return new Promise((resolve) => {
     // Try git diff first (better word-level diffs)
@@ -377,9 +381,14 @@ function collectModes(components) {
 }
 
 /**
- * Get comparison configurations based on options and available data
+ * Version pairs to compare, from the options or from the versions the files actually carry
+ *
+ * @param {Object} options - Parsed command line options
+ * @param {Object} oldComponents - Components from the old file
+ * @param {Object} newComponents - Components from the new file
+ * @returns {Object[]} Pairs of `oldVersion`, `newVersion` and a display `label`
  */
-function getComparisons(options, oldComponents, newComponents) {
+function getVersionPairs(options, oldComponents, newComponents) {
   // If specific version comparisons are requested, use those
   if (options.twFrom && options.twTo) {
     return [{
@@ -426,25 +435,57 @@ function getComparisons(options, oldComponents, newComponents) {
 }
 
 /**
- * Compare a single snippet combination (version, framework, mode)
+ * Expand the options into the list of comparisons to run.  A comparison names a format on each
+ * side, so sweeping versions, frameworks and modes is a list of pairs rather than three nested
+ * loops carried through the walk.
+ *
+ * @param {Object} options - Parsed command line options
+ * @param {Object} oldComponents - Components from the old file
+ * @param {Object} newComponents - Components from the new file
+ * @param {Array<string|null>} modes - Modes present across both files
+ * @returns {Object[]} Comparisons, each with `from`, `to`, `describe`, `fromLabel`, `toLabel` and
+ *   `fileLabel`
  */
-async function compareSnippetCombination(oldComponent, newComponent, comparison, framework, mode, componentPath, options, state) {
-  const oldContent = findSnippetCode(oldComponent, comparison.oldVersion, framework, mode);
-  const newContent = findSnippetCode(newComponent, comparison.newVersion, framework, mode);
+function getComparisons(options, oldComponents, newComponents, modes) {
+  const versionPairs = getVersionPairs(options, oldComponents, newComponents);
+  const frameworks = options.framework ? [options.framework] : FRAMEWORKS;
+
+  return versionPairs.flatMap(({ oldVersion, newVersion, label }) =>
+    frameworks.flatMap(framework =>
+      modes.map(mode => {
+        const suffix = `.${framework}${mode === null ? '' : `.${mode}`}`;
+        return {
+          from: { framework, version: oldVersion, mode },
+          to: { framework, version: newVersion, mode },
+          describe: `${label}${suffix}`,
+          fromLabel: `v${oldVersion}${suffix}`,
+          toLabel: `v${newVersion}${suffix}`,
+          fileLabel: `${label}_${framework}${mode === null ? '' : `_${mode}`}`
+        };
+      })
+    )
+  );
+}
+
+/**
+ * Compare one format against another for a single component
+ */
+async function compareSnippetCombination(oldComponent, newComponent, comparison, componentPath, options, state) {
+  const { from, to } = comparison;
+  const oldContent = findSnippetCode(oldComponent, from.version, from.framework, from.mode);
+  const newContent = findSnippetCode(newComponent, to.version, to.framework, to.mode);
 
   // Skip if neither component has this combination
   if (!oldContent && !newContent) {
     return;
   }
 
-  const modeStr = mode === null ? '' : `.${mode}`;
-
   if (!oldContent || !newContent) {
     ensureHeaderPrinted(state);
     if (!oldContent) {
-      console.log(`        Missing ${comparison.label}.${framework}${modeStr} in ${options.oldFile}`);
+      console.log(`        Missing ${comparison.fromLabel} in ${options.oldFile}`);
     } else {
-      console.log(`        Missing ${comparison.label}.${framework}${modeStr} in ${options.newFile}`);
+      console.log(`        Missing ${comparison.toLabel} in ${options.newFile}`);
     }
     state.hasDifferences = true;
     return;
@@ -452,19 +493,18 @@ async function compareSnippetCombination(oldComponent, newComponent, comparison,
 
   if (oldContent !== newContent) {
     ensureHeaderPrinted(state);
-    const modeStrFile = mode === null ? '' : `_${mode}`;
-    const safeName = `${componentPath}_${comparison.label}_${framework}${modeStrFile}`
+    const safeName = `${componentPath}_${comparison.fileLabel}`
       .replace(/[^a-zA-Z0-9._-]/g, '_')
       .replace(/__+/g, '_');
     const diffFileName = `${safeName}.diff`;
 
     const diffPath = path.join(DIFF_DIR, diffFileName);
-    await generateDiff(oldContent, newContent, diffPath, framework, safeName);
+    await generateDiff(oldContent, newContent, diffPath, comparison, safeName);
     state.diffs++;
     state.hasDifferences = true;
   } else if (options.verbose) {
     ensureHeaderPrinted(state);
-    console.log(`        No changes in ${comparison.label}.${framework}${modeStr}`);
+    console.log(`        No changes in ${comparison.describe}`);
   }
 }
 
@@ -479,9 +519,9 @@ function ensureHeaderPrinted(state) {
 }
 
 /**
- * Compare a single component across versions, frameworks, and modes
+ * Compare a single component across every requested pair of formats
  */
-async function compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader, availableModes) {
+async function compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader) {
   const state = {
     diffs: 0,
     hasDifferences: false,
@@ -489,14 +529,8 @@ async function compareComponent(oldComponent, newComponent, comparisons, compone
     componentHeader
   };
 
-  const frameworks = options.framework ? [options.framework] : ['html', 'react', 'vue'];
-
   for (const comparison of comparisons) {
-    for (const framework of frameworks) {
-      for (const mode of availableModes) {
-        await compareSnippetCombination(oldComponent, newComponent, comparison, framework, mode, componentPath, options, state);
-      }
-    }
+    await compareSnippetCombination(oldComponent, newComponent, comparison, componentPath, options, state);
   }
 
   return { diffs: state.diffs, hasDifferences: state.hasDifferences };
@@ -510,12 +544,13 @@ async function compareComponents(oldComponents, newComponents, options) {
 
   let totalDiffs = 0;
   let differencesFound = false;
-  const comparisons = getComparisons(options, oldComponents, newComponents);
 
   // Collect all available modes from both old and new components
   const oldModes = collectModes(oldComponents);
   const newModes = collectModes(newComponents);
   const allModes = [...new Set([...oldModes, ...newModes])].sort(compareModes);
+
+  const comparisons = getComparisons(options, oldComponents, newComponents, allModes);
 
   console.log(`Available modes: ${allModes.map(m => m === null ? 'null' : m).join(', ')}\n`);
 
@@ -542,7 +577,7 @@ async function compareComponents(oldComponents, newComponents, options) {
           }
 
           const componentPath = `${category}_${subcategory}_${group}_${component}`;
-          const result = await compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader, allModes);
+          const result = await compareComponent(oldComponent, newComponent, comparisons, componentPath, options, componentHeader);
 
           if (result.hasDifferences) {
             differencesFound = true;
