@@ -3,7 +3,7 @@
   "version": "3.3.0",
   "type": "module",
   "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+    "node": "^22.22.2 || ^24.15.0 || ^26.0.0"
   },
   "description": "A downloader for TailwindPlus components with diff comparison tools",
   "author": "Richard Michael",
