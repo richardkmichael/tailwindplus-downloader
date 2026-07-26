@@ -2152,6 +2152,7 @@ function parseArgs() {
     outputFormat: argv.outputFormat,
     overwrite: argv.overwrite,
     workers: argv.workers,
+    retries: argv.retries,
     session: argv.session || CONFIG.session,
     credentials: argv.credentials || CONFIG.credentials,
     log: argv.log,
