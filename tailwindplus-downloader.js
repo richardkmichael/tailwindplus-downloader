@@ -411,13 +411,12 @@ function createConfig() {
     // Lower the default timeout to notify sooner if actions are failing.
     timeout: 10000,
 
-    // Sub-resources aborted on the format-setting browser context.  All needed data is
-    // in the server-rendered data-page JSON, so these only add load on the live site.
-    // Stylesheets and scripts are kept: the page must hydrate to accept control clicks.
+    // Times a failed page is retried, and the default for --retries.
+    retries: 3,
 
-    retries: {
-      maxRetries: 3
-    },
+    // Times a run re-authenticates before giving up on the session.  Distinct from the retry
+    // above: a page can fail transiently, whereas an unrestorable session fails every request.
+    reauthAttempts: 3,
 
     download: {
       frameworks: ['react', 'vue', 'html'],
@@ -1193,10 +1192,10 @@ class TailwindPlusDownloader {
       }
 
       // The response is unauthenticated: the session died.  Re-authenticate and retry.
-      if (sessionAttempt >= CONFIG.retries.maxRetries) {
+      if (sessionAttempt >= CONFIG.reauthAttempts) {
         throw new SessionError(`Session still invalid for ${url} after ${sessionAttempt} re-auth attempt(s)`);
       }
-      this.logger.warn(`Session expired fetching ${url}; re-authenticating (attempt ${sessionAttempt + 1}/${CONFIG.retries.maxRetries})`);
+      this.logger.warn(`Session expired fetching ${url}; re-authenticating (attempt ${sessionAttempt + 1}/${CONFIG.reauthAttempts})`);
       await this._reauthenticate(observedGeneration);
     }
   }
@@ -2091,7 +2090,7 @@ function parseArgs() {
     .option('retries', {
       type: 'number',
       requiresArg: true,
-      default: CONFIG.retries.maxRetries,
+      default: CONFIG.retries,
       describe: 'Times to retry a page that fails to download'
     })
     .option('session', {
