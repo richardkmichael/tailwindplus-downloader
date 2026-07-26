@@ -244,7 +244,9 @@ they are skipped, and the run reports how many were skipped and why.
 
 ## Dependencies
 
-- Node.js and npm
+- Node.js on a current LTS line — 22, 24 or 26 — and npm.  Odd-numbered releases are not
+  long-term support lines and are not supported; `npm` warns rather than refusing, so a run on one
+  may fail in less obvious ways.
 - Playwright Chromium and its system dependencies — for logging in; a run with a saved session
   launches no browser
 - git — optional, provides better diffs (recommended)
