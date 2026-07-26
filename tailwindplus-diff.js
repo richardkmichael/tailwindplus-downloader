@@ -852,5 +852,8 @@ const executedDirectly = process.argv[1] &&
   fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
 
 if (executedDirectly) {
-  main().catch(console.error);
+  main().catch(error => {
+    console.error('[FATAL]', error);
+    process.exit(1);
+  });
 }
