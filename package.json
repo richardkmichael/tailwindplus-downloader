@@ -23,7 +23,7 @@
   "dependencies": {
     "playwright": "^1.62.0",
     "read": "^6.0.0",
-    "yargs": "^18.0.0"
+    "yargs": "^18.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
