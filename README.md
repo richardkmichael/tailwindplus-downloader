@@ -380,7 +380,7 @@ whole account, so every format of a page is collected in one visit.
 
 ### Code Quality
 
-This project uses ESLint v9 for code quality control.
+This project uses ESLint for code quality control.
 
 ```bash
 # Check code style
