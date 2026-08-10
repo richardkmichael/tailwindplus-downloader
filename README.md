@@ -390,6 +390,12 @@ npm run lint
 npm run lint:fix
 ```
 
+CI also runs ShellCheck against the smoke-test harness, so check that before pushing changes to it:
+
+```bash
+shellcheck test/smoke-test.sh
+```
+
 ### Testing
 
 Unit tests cover the pure logic -- entity decoding, page-data parsing, format selection and
