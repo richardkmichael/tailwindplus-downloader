@@ -59,18 +59,4 @@ module.exports = [
       "prefer-promise-reject-errors": "warn"
     },
   },
-
-  // Browser context files (inside page.evaluate calls)
-  {
-    files: ["**/browser-scripts/**/*.js"],
-    languageOptions: {
-      globals: {
-        ...globals.browser,
-      },
-    },
-    rules: {
-      // Rules specific to browser context
-      "no-undef": "off", // Browser globals are available
-    },
-  },
 ];
