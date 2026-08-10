@@ -5,6 +5,15 @@
 ## Logging Best Practices
 - Never console.log directly, always use the logger object if one exists.
 
+## The TailwindPlus Site
+
+How the site itself behaves — where the page data lives, how a format change is made, why no browser
+is needed to read, session cookies, URL structure — is written up in
+[docs/TAILWINDPLUS_ARCHITECTURE.md](docs/TAILWINDPLUS_ARCHITECTURE.md).  Read it before changing how
+the downloader reads the site, and when a download breaks in a way the logs do not explain.
+
+It describes the site, not the downloader, so it stays accurate as the downloader changes.
+
 ## Testing Guidelines
 - When testing the downloader scripts, use `--output=<SOME TEST FILE> --log`.  The `--log` flag creates a debug log with the same basename but `.log` suffix.
 
