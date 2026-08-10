@@ -8,6 +8,16 @@
 ## Testing Guidelines
 - When testing the downloader scripts, use `--output=<SOME TEST FILE> --log`.  The `--log` flag creates a debug log with the same basename but `.log` suffix.
 
+## Unit Tests
+
+Cover the pure logic — entity decoding, page-data parsing, format selection, sorting, and the diff
+tool's comparison logic.  No network, and they finish in under a second, so reach for these first:
+
+```bash
+npm run test:unit    # unit tests only
+npm test             # unit tests, then the smoke suite
+```
+
 ## Smoke Tests
 
 Run the full suite from the repo root:
