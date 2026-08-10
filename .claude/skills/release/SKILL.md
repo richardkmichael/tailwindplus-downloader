@@ -21,6 +21,8 @@ disable-model-invocation: true
 - Annotated tags only: `git tag -a <tag> -m "<tag>"`
 - RC tags: `vX.Y.Z-rc.N` — bump package.json + package-lock.json to match, commit first
 - Final tags: `vX.Y.Z` — bump package.json + package-lock.json, dropping the `-rc.N` suffix, commit first
+- The `latest` tag tracks the newest final release: its own annotated tag, overwritten each final
+  release, so its tagger and date record when it moved.  Only final releases move it; RCs never do.
 - Conventional commits inform semver assessment: `feat:` → minor, `BREAKING CHANGE:` → major, else → patch
 
 The dot in `-rc.N` is load-bearing.  Semver reads a dotless `rc10` as one alphanumeric identifier
@@ -29,6 +31,20 @@ numeric identifier and compares numerically.
 
 Every build reports its own version: `downloader_version` is written into each downloaded file, so
 an RC whose package.json still held the previous release would be indistinguishable from it.
+
+## Preconditions
+
+Both workflows tag a commit and publish it, so the branch must be in sync with the remote before
+anything is tagged.  Check first, and abort if it is not:
+
+```bash
+git fetch origin
+git rev-list --left-right --count origin/development...HEAD   # expect: 0	0
+```
+
+Anything other than `0	0` aborts the release.  Commits ahead of the remote mean tagging history
+nobody else has; commits behind mean releasing without work already on the remote.  Say which side
+is out of sync and stop — pushing or pulling on the user's behalf is their call, not the skill's.
 
 ## Tag Queries
 ```bash
@@ -58,11 +74,14 @@ git tag -l 'v[0-9]*' --sort=-version:refname | grep -v -- '-rc' | head -1
 9. Commit only the version bump: `git add package.json package-lock.json` then commit `chore: bump version to vX.Y.Z-rc.N`
 10. Execute:
     ```bash
+    # Publish the version-bump commit before tagging it
+    git push origin development
     git tag -a <new-rc-tag> -m "<new-rc-tag>"
     git push origin <new-rc-tag>
     # Add --draft if invoked as `/release draft rc`
     gh release create <new-rc-tag> --prerelease [--draft] --title "<new-rc-tag>" --notes "<changelog>"
     ```
+    The `latest` tag is not moved here.  It names the newest final release, never a pre-release.
 
 ## Final Release Workflow
 
@@ -81,11 +100,33 @@ git tag -l 'v[0-9]*' --sort=-version:refname | grep -v -- '-rc' | head -1
 8. Show proposed tag + changelog, wait for user confirmation before executing
 9. Execute:
    ```bash
+   # Publish the version-bump commit before tagging it
+   git push origin development
    git tag -a <new-final-tag> -m "<new-final-tag>"
    git push origin <new-final-tag>
    # Add --draft if invoked as `/release draft`
    gh release create <new-final-tag> [--draft] --title "<new-final-tag>" --notes "<changelog>"
    ```
+10. Move the `latest` tag onto this release.  Final releases only: an RC never moves `latest`, and
+    never reaches this step.  Skip it for `/release draft` as well — `latest` should name a
+    published release, so move it once the draft is published instead.
+    ```bash
+    git tag -f -a latest -m "<new-final-tag>" <new-final-tag>^{}
+    git push --force origin latest
+    ```
+    Force is required on both: the tag exists already, locally and on the remote.  Overwriting is
+    the point — no previous `latest` is kept, so nothing is lost.
+
+    The `^{}` is load-bearing: it peels the release tag to its commit.  Without it the new tag
+    points at the release's tag object instead, nesting one annotated tag inside another.
+
+    Giving `latest` its own object is what makes the move visible.  Its tagger date is the date the
+    tag moved, not the date the release was tagged, so a `latest` trailing the newest release shows
+    up as stale.  A bare `git tag -f latest <tag>` cannot record that: it creates no object, only a
+    second ref onto the release's own tag.
+
+    The README tells users to install from `#latest`, so a release that does not move it leaves
+    every reader of the README on the previous version.
 
 ## Changelog Format
 
