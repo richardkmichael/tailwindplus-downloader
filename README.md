@@ -414,3 +414,21 @@ present, so the suite is usable without an account.
 npm run smoke-test    # smoke tests only
 npm test              # unit tests, then smoke tests
 ```
+
+### The `latest` tag
+
+`latest` floats: every final release moves it onto that release, which is what makes the `#latest`
+install commands above resolve to the newest version.  Installs re-read the tag from the remote
+each time, so they always get the current one.
+
+A clone does not.  It keeps whatever `latest` pointed at when it was cloned, and neither `git pull`
+nor `git fetch --tags` will move it -- git declines to overwrite a tag it already holds, reporting
+`[rejected] latest -> latest (would clobber existing tag)` and still exiting 0, so it is easy to
+miss.  To update it:
+
+```bash
+git fetch origin --force refs/tags/latest:refs/tags/latest
+```
+
+Prefer that to `git fetch --tags --force`, which force-updates every tag whose name matches one on
+the remote -- including any local tag of your own that happens to share a name.
