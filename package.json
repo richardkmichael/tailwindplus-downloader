@@ -28,7 +28,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "eslint": "^10.9.1",
-    "globals": "^17.8.0"
+    "globals": "^17.11.0"
   },
   "scripts": {
     "postinstall": "npx playwright install --with-deps chromium",
