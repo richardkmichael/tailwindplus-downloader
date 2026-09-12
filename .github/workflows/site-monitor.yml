@@ -1,0 +1,124 @@
+# Weekly check that the downloader still works against the live TailwindPlus site.
+#
+# The downloader reads someone else's site, so it stops working when that site changes
+# rather than when this repository does.  The pull request suite cannot catch that: it
+# holds no account, and the site serves nothing without one.  This job logs in on a
+# schedule and runs a real download, so a change to the page data, the format endpoint
+# or the login form surfaces here instead of the next time someone needs a download.
+#
+# Downloaded components are licensed material and must not leave the runner.  This
+# repository is public, which makes both its Actions logs and its artifacts readable by
+# anyone, so the job uploads nothing, sends every stream the run produces to a file
+# rather than to the job log, and deletes the download before it finishes.  A failure
+# reports only the downloader's own error lines, which name URLs, formats and counts.
+#
+# The download keeps the downloader's own default filenames, which the repository
+# already ignores, so nothing here can be committed even if the cleanup never runs.
+#
+# It never runs on a pull request.  The credentials are Actions secrets, which a
+# Dependabot-triggered run cannot read, so a dependency bump never gets to see them.
+#
+# Requires a site-monitor environment holding two secrets: TAILWINDPLUS_EMAIL and
+# TAILWINDPLUS_PASSWORD.
+
+name: Site monitor
+
+on:
+  schedule:
+    # Mondays, 06:17 UTC.  Off the hour, which is when scheduled runs queue worst.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+# A run sets the account-level format and restores it at the end, so two overlapping
+# runs would fight over it.
+concurrency:
+  group: site-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Holds the credentials, so only a job naming this environment can read them.
+    #
+    # Intentionally left without a deployment branch restriction.  The job has no
+    # pull_request trigger and so never runs on a pull request by itself, which leaves
+    # dispatching it against a branch as the only way to check a change that nothing short
+    # of a real download would catch.  Restricting the environment to the default branch
+    # would take that away.
+    environment: site-monitor
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      # The login form is the one interaction that needs a browser, and this job always
+      # logs in: a runner starts with no saved session.
+      - run: npx playwright install --with-deps chromium
+
+      # Written through the environment rather than interpolated into the script, so the
+      # values never appear in the command line.
+      - name: Write credentials file
+        env:
+          TAILWINDPLUS_EMAIL: ${{ secrets.TAILWINDPLUS_EMAIL }}
+          TAILWINDPLUS_PASSWORD: ${{ secrets.TAILWINDPLUS_PASSWORD }}
+        run: |
+          node -e 'const fs = require("fs");
+            fs.writeFileSync(".tailwindplus-downloader-credentials.json",
+              JSON.stringify({ email: process.env.TAILWINDPLUS_EMAIL, password: process.env.TAILWINDPLUS_PASSWORD }));'
+
+      # Discovery reads the whole product tree before --debug-short-test narrows the
+      # download to two pages, so the listing that this job exists to watch is covered in
+      # full while the download itself stays small.
+      #
+      # --output is left at its default, so the download and its log are named
+      # tailwindplus-components-<timestamp>, which .gitignore already covers.  --log sends
+      # the downloader's own output to that log; the redirect catches what does not go
+      # through the logger, which is the stack a fatal error prints.  Both logs are named
+      # to match the same ignore rule, and so also the same glob below.
+      - name: Run a short download
+        run: node tailwindplus-downloader.js --debug-short-test --log > tailwindplus-components-console.log 2>&1
+
+      # A run that captures nothing still exits 0, which would let an empty listing pass
+      # as a healthy check.  The count is the only thing about the download this job
+      # prints.
+      - name: Check the download captured components
+        run: |
+          node -e 'const fs = require("fs");
+            const name = fs.readdirSync(".").find(f => /^tailwindplus-components-.*\.json$/.test(f));
+            if (!name) { console.error("The run wrote no output file."); process.exit(1); }
+            const out = JSON.parse(fs.readFileSync(name, "utf8"));
+            const count = out.component_count;
+            if (!Number.isInteger(count) || count < 1) {
+              console.error("Downloaded " + count + " components; the site returned a listing but no content.");
+              process.exit(1);
+            }
+            console.log("Downloaded " + count + " components.");'
+
+      # Error and warning lines only, capped: enough to say what the site did, without
+      # putting the body of the run into a public log.
+      - name: Report the failure
+        if: failure()
+        run: |
+          reported=$(grep -hE '\[(ERROR|WARN|FATAL)' tailwindplus-components-*.log 2>/dev/null | head -50 || true)
+          if [ -n "$reported" ]; then
+            echo "$reported"
+          else
+            echo 'The run failed before it logged an error.'
+          fi
+
+      - name: Remove the download, the logs and the credentials
+        if: always()
+        run: |
+          rm -f tailwindplus-components-*.json tailwindplus-components-*.log \
+            .tailwindplus-downloader-credentials.json .tailwindplus-downloader-session.json
