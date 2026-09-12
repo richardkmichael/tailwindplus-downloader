@@ -182,8 +182,6 @@ npx github:richardkmichael/tailwindplus-downloader#latest --retries 5
 # Print the resolved configuration and exit
 npx github:richardkmichael/tailwindplus-downloader#latest --show-config
 
-# Unauthenticated (downloads free/demo components only)
-npx github:richardkmichael/tailwindplus-downloader#latest --unauthenticated
 ```
 
 Within the repo, or with a global install, short-form aliases are available:
@@ -373,9 +371,6 @@ the response rather than off the rendered page.  Almost every step is a plain HT
 
 A browser is launched only for the login form.  A run with a saved session never starts one.
 
-`--unauthenticated` works the same way, except the format applies per component rather than to the
-whole account, so every format of a page is collected in one visit.
-
 ## Development
 
 ### Code Quality
@@ -406,9 +401,9 @@ npm run test:unit
 ```
 
 The smoke tests cover option permutations (JSON and directory output, `--overwrite`, `--log`,
-default timestamped paths, interrupts) using real downloads.  The ones that need no login run
-against free sample components; the rest skip themselves unless a session or credentials file is
-present, so the suite is usable without an account.
+default timestamped paths, interrupts) using real downloads.  Every test that downloads skips
+itself unless a session or credentials file is present, leaving argument handling, the abort paths
+and the diff tool to run without an account.
 
 ```bash
 npm run smoke-test    # smoke tests only

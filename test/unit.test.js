@@ -10,10 +10,7 @@ import {
   decodeHtmlEntities,
   parseDataPageFromHtml,
   isEcommerceUrl,
-  selectFreeComponents,
-  componentsHaveModes,
   retryDecision,
-  uniqueFrameworkVersions,
   subcategoryOfRequiredFormat,
   sortSnippetsRecursively,
   Format
@@ -61,38 +58,6 @@ describe('isEcommerceUrl', () => {
   });
 });
 
-describe('selectFreeComponents', () => {
-  const light = { name: 'Hero', preview: 'light', downloadable: true, uuid: 'a' };
-  const dark = { name: 'Hero', preview: 'dark', downloadable: true, uuid: 'b' };
-
-  test('takes one record per component, preferring the light preview', () => {
-    const chosen = selectFreeComponents([light, dark]);
-    assert.equal(chosen.length, 1);
-    assert.equal(chosen[0].preview, 'light');
-  });
-
-  test('prefers light regardless of the order listed', () => {
-    const chosen = selectFreeComponents([dark, light]);
-    assert.equal(chosen.length, 1);
-    assert.equal(chosen[0].preview, 'light');
-  });
-
-  test('takes the dark record when only it is downloadable', () => {
-    const chosen = selectFreeComponents([{ ...light, downloadable: false }, dark]);
-    assert.equal(chosen.length, 1);
-    assert.equal(chosen[0].preview, 'dark');
-  });
-
-  test('ignores components that are not downloadable', () => {
-    assert.deepEqual(selectFreeComponents([{ ...light, downloadable: false }]), []);
-  });
-
-  test('keeps distinct components apart', () => {
-    const other = { name: 'Footer', preview: 'light', downloadable: true, uuid: 'c' };
-    assert.equal(selectFreeComponents([light, dark, other]).length, 2);
-  });
-});
-
 describe('retryDecision', () => {
   test('retries while attempts remain', () => {
     assert.equal(retryDecision(0, 3), 'retry');
@@ -113,48 +78,6 @@ describe('retryDecision', () => {
     // comparison was false for every page, so nothing was ever retried and each failure went
     // straight to exhausted -- silently, because that is also what a correct limit eventually says.
     assert.equal(retryDecision(0, undefined), 'exhausted');
-  });
-});
-
-describe('componentsHaveModes', () => {
-  const moded = { name: 'Hero', snippet: { name: 'html', version: 4, mode: 'light' } };
-  const modeless = { name: 'Product list', snippet: { name: 'html', version: 4, mode: null } };
-
-  test('true when a component carries a mode', () => {
-    assert.equal(componentsHaveModes([moded]), true);
-  });
-
-  test('false when every component has a null mode', () => {
-    assert.equal(componentsHaveModes([modeless, modeless]), false);
-  });
-
-  test('a component with no snippet does not make a page moded', () => {
-    // Optional chaining reads a missing snippet's mode as undefined, which is not null, so a
-    // snippetless component would drive a mode-less page through all 18 formats and collect the
-    // same six snippets three times over.
-    assert.equal(componentsHaveModes([{ name: 'Broken' }, modeless]), false);
-  });
-
-  test('false for no components at all', () => {
-    assert.equal(componentsHaveModes([]), false);
-  });
-});
-
-describe('uniqueFrameworkVersions', () => {
-  test('collapses modes, keeping one entry per framework and version', () => {
-    const formats = ['system', 'light', 'dark'].flatMap(mode => [
-      new Format('html', 4, mode),
-      new Format('vue', 3, mode)
-    ]);
-    const unique = uniqueFrameworkVersions(formats);
-
-    assert.equal(unique.length, 2);
-    assert.deepEqual(unique.map(f => `${f.framework}-v${f.version}`), ['html-v4', 'vue-v3']);
-  });
-
-  test('preserves the order given', () => {
-    const formats = [new Format('vue', 3, 'dark'), new Format('html', 4, 'dark')];
-    assert.deepEqual(uniqueFrameworkVersions(formats).map(f => f.framework), ['vue', 'html']);
   });
 });
 
