@@ -4,9 +4,9 @@
 #
 # Run from the repo root or from within test/.
 #
-# The unauthenticated tests need no login and always run.  The rest need a
-# session or credentials file and skip when neither is present, so this suite
-# is usable in CI without exposing an account.
+# Every test that downloads needs a session or credentials file and skips when
+# neither is present, so this suite runs in CI without exposing an account —
+# covering argument handling, the abort paths and the diff tool.
 #
 # Usage: bash test/smoke-test.sh [--trace] [filter]
 #
@@ -375,7 +375,6 @@ require_auth() {
 
 ONE_URL_FILE="test/one-test-url.txt"
 MANY_URL_FILE="test/many-test-urls.txt"
-NO_FREE_URL_FILE="test/no-free-components-url.txt"
 ECOMMERCE_URL_FILE="test/ecommerce-test-url.txt"
 
 DEFAULT_SESSION=".tailwindplus-downloader-session.json"
@@ -386,13 +385,13 @@ RUN_DIR="test/smoke-test-runs/run.$$"
 HAS_CREDS=false
 [[ -f "$DEFAULT_CREDS" ]] && HAS_CREDS=true
 
-# The unauthenticated tests need no login, so a run with no session or credentials
-# is valid — the authenticated tests skip instead of aborting the run.
+# A run with no session or credentials is valid — the tests that download skip
+# instead of aborting the run, leaving the offline tests to carry it.
 HAS_AUTH=false
 [[ -f "$DEFAULT_SESSION" || -f "$DEFAULT_CREDS" ]] && HAS_AUTH=true
 
 if ! $HAS_AUTH; then
-  echo "No session or credentials found; running unauthenticated tests only."
+  echo "No session or credentials found; running offline tests only."
   echo "  $DEFAULT_SESSION"
   echo "  $DEFAULT_CREDS"
 fi
@@ -410,6 +409,8 @@ test_json_basic() {
 
   run_cmd 0 "" downloader --debug-url-file="$MANY_URL_FILE" --output="$dir/output.json" --log --debug
   check_file_exists "output file created" "$dir/output.json"
+  check_component_count "components captured" "$dir/output.json" min 1
+  check_descriptions "descriptions captured" "$dir/output.json"
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
@@ -433,6 +434,8 @@ test_json_overwrite() {
   local fail_before=$FAIL
 
   run_cmd 0 "" downloader --debug-url-file="$ONE_URL_FILE" --output="$dir/output.json" --overwrite --log --debug
+  # A moded page: 3 frameworks x 2 versions x 3 modes.
+  check_snippet_formats "every format captured once" "$dir/output.json" 18
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
@@ -447,6 +450,7 @@ test_dir_basic() {
   check_file_exists "output directory created" "$dir/output"
   check_file_exists "metadata.json written" "$dir/output/metadata.json"
   check_file_exists "descriptions.json written" "$dir/output/descriptions.json"
+  check_component_count "components captured" "$dir/output/metadata.json" min 1
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
@@ -545,60 +549,18 @@ test_auth_relogin() {
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
-# Unauthenticated mode captures only the free sample components, so these tests
-# need no session or credentials and are the subset CI can run.
-
-test_unauth_no_credentials() {
-  local dir="$RUN_DIR/12-unauth-no-credentials"
+# eCommerce pages have no mode controls, so their components carry a null mode and yield 6
+# snippets each rather than 18.  This is the only test that reaches the mode-less path and the
+# suffix-free filenames it produces in directory output.
+test_dir_ecommerce() {
+  require_auth || return
+  local dir="$RUN_DIR/12-dir-ecommerce"
   mkdir -p "$dir"
   local fail_before=$FAIL
 
-  # Run from inside the subdir, passing no auth arguments, so the default session
-  # and credentials paths resolve to a directory that has neither.  This is what
-  # proves the mode needs no account.
-  # shellcheck disable=SC2016 # $1/$@ expand inside the bash -c subshell, not here.
-  run_cmd 0 "" \
-    bash -c 'cd "$1" && shift && node "$@"' _ "$dir" \
-      "$ROOT_DIR/tailwindplus-downloader.js" \
-      --unauthenticated \
-      --debug-url-file="$ROOT_DIR/$ONE_URL_FILE" \
-      --output=output.json \
-      "${TRACE_ARGS[@]+"${TRACE_ARGS[@]}"}"
-
-  check_file_exists "output file created" "$dir/output.json"
-  check_file_absent "no session file written" "$dir/$DEFAULT_SESSION"
-  check_component_count "free components captured" "$dir/output.json" min 1
-  check_descriptions "descriptions captured" "$dir/output.json"
-  # A moded page: 3 frameworks x 2 versions x 3 modes.
-  check_snippet_formats "every format captured once" "$dir/output.json" 18
-
-  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
-}
-
-test_unauth_no_free_components() {
-  local dir="$RUN_DIR/13-unauth-no-free-components"
-  mkdir -p "$dir"
-  local fail_before=$FAIL
-
-  run_cmd 0 "" downloader --unauthenticated --debug-url-file="$NO_FREE_URL_FILE" --output="$dir/output.json" --log --debug
-  check_component_count "completes with nothing captured" "$dir/output.json" exact 0
-
-  [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
-}
-
-test_unauth_dir_output() {
-  local dir="$RUN_DIR/14-unauth-dir-output"
-  mkdir -p "$dir"
-  local fail_before=$FAIL
-
-  # An eCommerce page, so this covers the mode-less extraction path and the suffix-free filenames
-  # it produces, neither of which the moded page used elsewhere reaches.  It has more than one free
-  # component, so the per-component loop iterates.
-  run_cmd 0 "" downloader --unauthenticated --debug-url-file="$ECOMMERCE_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
+  run_cmd 0 "" downloader --debug-url-file="$ECOMMERCE_URL_FILE" --output-format=dir --output="$dir/output" --log --debug
   check_file_exists "output directory created" "$dir/output"
-  check_file_exists "metadata.json written" "$dir/output/metadata.json"
-  check_file_exists "descriptions.json written" "$dir/output/descriptions.json"
-  check_component_count "multiple free components captured" "$dir/output/metadata.json" min 2
+  check_component_count "components captured" "$dir/output/metadata.json" min 2
   check_modeless_filenames "mode-less snippet filenames" "$dir/output"
   # A mode-less page: 3 frameworks x 2 versions, with no mode to vary.
   check_snippet_file_count "every format written once" "$dir/output" 6
@@ -607,26 +569,28 @@ test_unauth_dir_output() {
 }
 
 test_url_file_empty() {
+  require_auth || return
   local dir="$RUN_DIR/15-url-file-empty"
   mkdir -p "$dir"
   printf '# a comment, and no URLs\n\n' > "$dir/urls.txt"
   local fail_before=$FAIL
 
   # An unfiltered run would download every component, so this must abort rather than proceed.
-  run_cmd 1 "notty" downloader --unauthenticated --debug-url-file="$dir/urls.txt" --output="$dir/output.json"
+  run_cmd 1 "notty" downloader --debug-url-file="$dir/urls.txt" --output="$dir/output.json"
   check_file_absent "no output written" "$dir/output.json"
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
 }
 
 test_interrupt_shuts_down() {
+  require_auth || return
   local dir="$RUN_DIR/16-interrupt"
   mkdir -p "$dir"
   local fail_before=$FAIL
 
   # Many URLs so the run cannot finish before the interrupt arrives.
   run_and_interrupt 130 'Started job:' "$dir/output.log" \
-    --unauthenticated --debug-url-file="$MANY_URL_FILE" --output="$dir/output.json" --log --debug
+    --debug-url-file="$MANY_URL_FILE" --output="$dir/output.json" --log --debug
 
   check_log_contains "interrupt reported" "$dir/output.log" 'Received SIGINT'
   check_log_contains "teardown reached" "$dir/output.log" 'Shutting down'
@@ -716,12 +680,12 @@ test_options_reach_the_run() {
   local fail_before=$FAIL
 
   # shellcheck disable=SC2016 # $1/$2 expand inside the bash -c subshell, not here.
-  run_cmd 0 "" bash -c 'node "$1" --show-config --unauthenticated --retries=7 --workers=3 > "$2" 2>&1' \
+  run_cmd 0 "" bash -c 'node "$1" --show-config --overwrite --retries=7 --workers=3 > "$2" 2>&1' \
     _ "$ROOT_DIR/tailwindplus-downloader.js" "$dir/config.json"
 
   check_log_contains "retries carried through" "$dir/config.json" '"retries": 7'
   check_log_contains "workers carried through" "$dir/config.json" '"workers": 3'
-  check_log_contains "unauthenticated carried through" "$dir/config.json" '"unauthenticated": true'
+  check_log_contains "overwrite carried through" "$dir/config.json" '"overwrite": true'
   check_log_contains "unset options listed" "$dir/config.json" '"debugTrace": null'
 
   [[ "$FAIL" -eq "$fail_before" ]] && rm -rf "$dir"
@@ -759,9 +723,7 @@ TESTS=(
   "auth: credentials present, no session|test_auth_fresh_login"
   "auth: no credentials, no session, non-TTY aborts|test_auth_no_creds"
   "auth: invalid session, re-login succeeds|test_auth_relogin"
-  "unauthenticated: no credentials needed|test_unauth_no_credentials"
-  "unauthenticated: page with no free components|test_unauth_no_free_components"
-  "unauthenticated: dir output format|test_unauth_dir_output"
+  "dir: eCommerce mode-less output|test_dir_ecommerce"
   "URL file with no URLs aborts|test_url_file_empty"
   "interrupt shuts down cleanly|test_interrupt_shuts_down"
   "diff: component counts reported|test_diff_component_counts"

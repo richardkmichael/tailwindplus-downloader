@@ -1,10 +1,6 @@
 # An eCommerce page, which has no light/dark/system controls.  Its components carry a null mode
 # and yield 6 snippets each (one per framework/version) rather than 18, exercising the mode-less
-# path in unauthenticated extraction and the suffix-free filenames in directory output.
+# path and the suffix-free filenames in directory output.
 #
-# It also has more than one free component, so the per-component loop actually iterates.
-#
-# This depends on TailwindPlus continuing to offer free samples here.  If they stop, the
-# "unauthenticated: dir output format" test will fail; pick another eCommerce page with free
-# components rather than loosening the assertion.
+# It also has more than one component, so the per-component loop actually iterates.
 https://tailwindcss.com/plus/ui-blocks/ecommerce/components/product-lists

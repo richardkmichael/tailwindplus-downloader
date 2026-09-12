@@ -1,12 +1,12 @@
 # Continuous integration.
 #
-# The smoke suite drives the live TailwindPlus site.  It runs in unauthenticated
-# mode here, which downloads only free sample components and needs no account, so
-# no credentials are stored in this repository.  The login-dependent tests skip
-# themselves when no session or credentials file is present.
+# The smoke suite drives the live TailwindPlus site, which requires an account.  No
+# credentials are stored in this repository, so every test that downloads skips
+# itself here and the suite covers argument handling, the abort paths and the diff
+# tool.  Unit tests run in full.
 #
-# Reads are plain HTTP, so no browser is installed: only the login form needs one,
-# and nothing that runs without credentials reaches it.
+# Nothing that runs without credentials reaches the login form, which is the only
+# part of a run that needs a browser, so none is installed.
 #
 # Because each run costs real requests against a third-party site, runs are
 # limited to pull requests and pushes to the default branch, superseded runs are

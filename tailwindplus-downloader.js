@@ -297,57 +297,6 @@ function isEcommerceUrl(url) {
 }
 
 /**
- * Picks one record per downloadable component.
- *
- * Every component is listed twice, as a light and a dark preview record with its own uuid and its
- * own snippet.  Exactly one is wanted per component, since the format is then driven across all of
- * them anyway, and two records of the same name would collide in the output.  The light record is
- * preferred so the captured set matches what the browser-driven path produced; taking whichever is
- * flagged means a component marked downloadable only in its dark record is captured rather than
- * silently skipped.
- *
- * @param {Object[]} components - Components from a subcategory's page data
- * @returns {Object[]} One record per downloadable component
- */
-function selectFreeComponents(components) {
-  const byName = new Map();
-
-  for (const component of components) {
-    if (!component.downloadable) {
-      continue;
-    }
-    const chosen = byName.get(component.name);
-    if (!chosen || (chosen.preview !== 'light' && component.preview === 'light')) {
-      byName.set(component.name, component);
-    }
-  }
-
-  return [...byName.values()];
-}
-
-/**
- * Reduces a format list to one entry per framework and version, dropping the mode.  Components
- * that have no mode render identically in all three, so a pass per mode fetches the same content.
- *
- * @param {Format[]} formats - Formats to reduce
- * @returns {Format[]} One format per framework/version pair, in the order given
- */
-/**
- * Reports whether a page's components carry modes.
- *
- * Components with no mode render identically in all three, so one pass per framework and version
- * covers them.  A component with no snippet says nothing either way and is ignored: treating it as
- * moded would drive a mode-less page through all 18 formats and collect the same six snippets three
- * times over.
- *
- * @param {Object[]} components - Components from a subcategory's page data
- * @returns {boolean} True when any component carries a mode
- */
-function componentsHaveModes(components) {
-  return components.some(component => component.snippet && component.snippet.mode !== null);
-}
-
-/**
  * Decides what becomes of a failed page.
  *
  * Separated from the queue and the logging so the boundary can be tested: an off-by-one here is
@@ -360,18 +309,6 @@ function componentsHaveModes(components) {
  */
 function retryDecision(retryCount, retryLimit) {
   return retryCount < retryLimit ? 'retry' : 'exhausted';
-}
-
-function uniqueFrameworkVersions(formats) {
-  const seen = new Set();
-  return formats.filter(format => {
-    const key = `${format.framework}-v${format.version}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
-  });
 }
 
 /**
@@ -417,8 +354,7 @@ function subcategoryOfRequiredFormat(pageData, url, expectedFormat) {
 
 /**
  * Sends the format-setting PUT through the given HTTP client, authenticated with the XSRF token
- * from the client's own cookie jar.  Authenticated it sets the account-wide format; with a `uuid`
- * in the data it sets one component's format for the calling session.
+ * from the client's own cookie jar, setting the account-wide format.
  *
  * The response redirects back to the page the format was set from, which there is no reason to
  * follow: every caller verifies with a read of its own.
@@ -470,8 +406,7 @@ function createConfig() {
       plus: `${base}/plus`,
       discovery: `${base}/plus/ui-blocks`,
       eCommerce: `${base}/plus/ui-blocks/ecommerce`,
-      // Sets the snippet format.  Unauthenticated it applies per component uuid, for the calling
-      // session only; authenticated it sets the account-wide preference.
+      // Sets the account-wide snippet format preference.
       language: `${base}/plus/ui-blocks/language`
     },
 
@@ -591,9 +526,7 @@ class TailwindPlusDownloader {
     // Subcategories are keyed by the dotted "product.category.subcategory" path.
     this.descriptions = { products: {}, subcategories: {} };
 
-    // Components actually downloaded, which is fewer than the discovered
-    // `componentCount` in unauthenticated mode: only free samples are reachable.
-    // Set when the output metadata is built.
+    // Components actually downloaded.  Set when the output metadata is built.
     this.capturedComponentCount = null;
 
     this.urls = [];
@@ -602,8 +535,7 @@ class TailwindPlusDownloader {
     this.currentFormat = null;
 
     // The account-level format in effect when the run started.  The site persists the format
-    // server-side, so it is restored when the format passes finish.  Null in unauthenticated
-    // mode, which has no account format.
+    // server-side, so it is restored when the format passes finish.
     this.initialFormat = null;
 
     // Mid-run re-authentication state.  `sessionGeneration` increments on each successful
@@ -638,14 +570,8 @@ class TailwindPlusDownloader {
       this.urlCount = discovery.urlCount;
       this.componentCount = discovery.componentCount;
 
-      let formats;
-      if (this.options.unauthenticated) {
-        // In unauthenticated mode, use default format order (no detection needed)
-        formats = this._generateFormats();
-      } else {
-        this.initialFormat = await this._detectFormat();
-        formats = this._generateFormats(this.initialFormat);
-      }
+      this.initialFormat = await this._detectFormat();
+      const formats = this._generateFormats(this.initialFormat);
 
       this._showStartMessage();
       await this._processFormats(formats);
@@ -731,8 +657,7 @@ class TailwindPlusDownloader {
   /**
    * Prepares the run's HTTP client and session: sets up the tracing directory if enabled, opens
    * the request context from any saved session, and logs in when the session is missing or
-   * invalid.  Unauthenticated mode needs no login and stops at the request context.
-   * `session` is a filename for a Playwright `storageState` file (saved after successful login)
+   * invalid.  `session` is a filename for a Playwright `storageState` file (saved after successful login)
    *
    * @throws {DownloaderError} When login is needed and fails
    */
@@ -749,11 +674,6 @@ class TailwindPlusDownloader {
     }
 
     await this._openRequestContext();
-
-    if (this.options.unauthenticated) {
-      this.logger.debug('Unauthenticated mode - skipping login');
-      return;
-    }
 
     if (await this._validateSession()) {
       this.logger.debug('Using existing valid session');
@@ -773,7 +693,7 @@ class TailwindPlusDownloader {
    */
   async _openRequestContext() {
     const contextOptions = {};
-    if (!this.options.unauthenticated && fs.existsSync(this.session)) {
+    if (fs.existsSync(this.session)) {
       contextOptions.storageState = this.session;
       this.logger.debug('Loading saved session');
     }
@@ -1340,10 +1260,6 @@ class TailwindPlusDownloader {
   }
 
   _showStartMessage() {
-    if (this.options.unauthenticated) {
-      this.logger.info('Unauthenticated mode: downloading free components only');
-    }
-
     if (this.options.debugTrace) {
       this.logger.info(`Tracing enabled. Traces will be saved to: ${this.tracesDir}`);
     }
@@ -1371,9 +1287,6 @@ class TailwindPlusDownloader {
    * eCommerce pages are the exception: they have no mode controls and render identically in every
    * mode, so they are queued once per framework/version rather than once per format.
    *
-   * In unauthenticated mode, workers handle all formats per-page in a single visit, since format
-   * controls work per-component without authentication.
-   *
    * @param {string[]} formats - Array of format identifiers to process
    * @throws {DownloaderError} When worker creation fails or format processing fails
    */
@@ -1387,20 +1300,6 @@ class TailwindPlusDownloader {
     for (let i = 0; i < numberOfWorkers; i++) {
       const worker = new Worker(i + 1, this, this.baseLogger);
       workers.push(worker);
-    }
-
-    // In unauthenticated mode, workers handle all formats per-page
-    if (this.options.unauthenticated) {
-      this.logger.info(`Unauthenticated mode: downloading ${formats.length} formats per page`);
-      this.formats = formats;  // Workers will use this
-      this._populateJobQueue();
-
-      const workerPromises = workers.map(worker => worker.start());
-      await Promise.all(workerPromises);
-      await Promise.all(workers.map(worker => worker.stop()));
-
-      this.logger.debug('All formats downloaded');
-      return;
     }
 
     // eCommerce pages render the same content in every mode, so only the first mode pass of
@@ -1499,8 +1398,7 @@ class TailwindPlusDownloader {
    * replace the error that ended a failed one.
    */
   async _restoreInitialFormat() {
-    // Unauthenticated mode has no account format to restore, and an authenticated run that aborted
-    // before detection never changed one.
+    // A run that aborted before detection never changed the account format.
     if (!this.initialFormat) {
       return;
     }
@@ -1771,12 +1669,6 @@ class Worker {
     this.downloader = downloader;
     this.state = 'stopped';
 
-    // Unauthenticated reads go over plain HTTP.  The context is per worker because the site
-    // scopes the format to the calling session, so a shared one would let workers overwrite
-    // each other's component formats.
-    this.requestContext = null;
-    this.inertiaVersion = null;
-
     // Pad the worker ID to ensure consistent identifier length
     const identifier = `Worker ${id.toString().padStart(2, ' ')}`;
     this.logger = logger.prefix(identifier);
@@ -1784,8 +1676,7 @@ class Worker {
 
   /**
    * Starts the worker and begins processing jobs from the downloader's job queue.
-   * Authenticated jobs are plain HTTP GETs through the downloader's request context; only
-   * unauthenticated mode opens a request context of its own, for its per-session format state.
+   * Jobs are plain HTTP GETs through the downloader's request context.
    *
    * If a job (URL to download in the current format) fails, it is returned to the main downloader,
    * and re-queued to be attempted again; up to the --retries limit.  A job generally fails with a
@@ -1804,12 +1695,6 @@ class Worker {
 
     this.state = 'started';
 
-    // Unauthenticated extraction reads over plain HTTP and needs no browser page.  Its own
-    // request context gives it its own cookie jar, and so its own per-component format state.
-    if (this.downloader.options.unauthenticated) {
-      this.requestContext = await request.newContext();
-    }
-
     // Job processing loop.  An interrupt stops the worker taking new jobs; the job already in
     // flight is allowed to finish rather than being abandoned mid-request.
     while (!this.downloader.interrupted && this.downloader.jobQueue.length > 0) {
@@ -1820,10 +1705,7 @@ class Worker {
         this.logger.debug(`Started job: ${job.url}`);
         job.status = 'processing';
 
-        // Use unauthenticated extraction when in that mode
-        const pageData = this.downloader.options.unauthenticated
-          ? await this._extractUnauthenticatedPageData(job)
-          : await this.extractPageData(job);
+        const pageData = await this.extractPageData(job);
 
         job.data = pageData;
         job.status = 'completed';
@@ -1906,183 +1788,10 @@ class Worker {
   }
 
   /**
-   * Reads a page as an Inertia partial, returning the same props as JSON at roughly a third of
-   * the bytes of the rendered HTML.  Falls back to a full read when no version is known yet, and
-   * again if the site is redeployed mid-run and rejects the version it gave us.
-   *
-   * @param {string} url - Page URL
-   * @returns {Promise<Object>} Parsed page data
-   * @throws {DownloaderError} When the request fails with a non-2xx status
+   * Stops the worker.  Workers read through the downloader's request context and hold no
+   * resources of their own, so there is nothing to dispose.
    */
-  async _readUnauthenticatedPage(url) {
-    if (!this.inertiaVersion) {
-      return this._readUnauthenticatedPageFully(url);
-    }
-
-    const response = await this.requestContext.get(url, {
-      headers: {
-        'x-inertia': 'true',
-        'x-inertia-version': this.inertiaVersion,
-        'x-requested-with': 'XMLHttpRequest',
-        accept: 'text/html, application/xhtml+xml'
-      },
-      timeout: CONFIG.timeout
-    });
-
-    // The site answers 409 when the deployed asset version has moved on.
-    if (response.status() === 409) {
-      this.logger.debug('Inertia version stale, re-reading the full page');
-      this.inertiaVersion = null;
-      return this._readUnauthenticatedPageFully(url);
-    }
-
-    if (!response.ok()) {
-      throw new DownloaderError(`Request to ${url} failed with HTTP ${response.status()}`);
-    }
-
-    return JSON.parse(await response.text());
-  }
-
-  /**
-   * Reads a page as rendered HTML and parses the `data-page` attribute out of it, recording the
-   * Inertia version so later reads of the same page can use the smaller JSON response.
-   *
-   * @param {string} url - Page URL
-   * @returns {Promise<Object>} Parsed page data
-   * @throws {DownloaderError} When the request fails or carries no page data
-   */
-  async _readUnauthenticatedPageFully(url) {
-    const response = await this.requestContext.get(url, { timeout: CONFIG.timeout });
-    if (!response.ok()) {
-      throw new DownloaderError(`Request to ${url} failed with HTTP ${response.status()}`);
-    }
-
-    const pageData = parseDataPageFromHtml(await response.text());
-    if (!pageData) {
-      throw new DownloaderError(`No data-page attribute found on ${url}`);
-    }
-
-    this.inertiaVersion = pageData.version;
-    return pageData;
-  }
-
-  /**
-   * Sets the format of a single component for this worker's session.
-   *
-   * Unauthenticated, the site scopes this to the component uuid, so workers do not disturb each
-   * other's pages and every format of a page can be read without a global setting.  Mode is
-   * accepted but ignored for components that have none.
-   *
-   * @param {string} uuid - Component uuid
-   * @param {Format} format - Target format
-   * @throws {DownloaderError} When the request is rejected
-   */
-  async _setUnauthenticatedFormat(uuid, format) {
-    try {
-      await putSnippetLanguage(this.requestContext, { uuid, snippet_lang: format.toString() });
-    } catch (error) {
-      throw new DownloaderError(`Setting format ${format} on ${uuid} failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Extracts every format of a page's free components over plain HTTP, with no browser page.
-   *
-   * The format is set per component with a PUT and the whole page is then read once, so a page
-   * costs one read per format rather than one per component per format.
-   *
-   * @param {Object} job - Job object containing URL
-   * @returns {Promise<Object>} Component data organized by hierarchy with all format snippets
-   * @throws {DownloaderError} When a request fails or the page carries no data
-   */
-  async _extractUnauthenticatedPageData(job) {
-    const url = job.url;
-
-    const pageData = await this._readUnauthenticatedPage(url);
-    const subcategory = pageData.props.subcategory;
-    const product = subcategory.category.product.name;
-    const category = subcategory.category.name;
-
-    this.downloader._recordSubcategoryDescription(product, category, subcategory);
-
-    const freeComponents = selectFreeComponents(subcategory.components);
-    if (freeComponents.length === 0) {
-      this.logger.debug(`No downloadable components on ${url}`);
-      return {};
-    }
-
-    this.logger.debug(`Found ${freeComponents.length} downloadable components`);
-
-    const formats = componentsHaveModes(freeComponents)
-      ? this.downloader.formats
-      : uniqueFrameworkVersions(this.downloader.formats);
-
-    const snippetsByUuid = new Map(freeComponents.map(component => [component.uuid, []]));
-
-    for (const format of formats) {
-      // One job covers every format of a page, so waiting for it to finish would make an
-      // interrupt feel unresponsive.  Stop between formats; an interrupted run writes no output.
-      if (this.downloader.interrupted) {
-        break;
-      }
-
-      for (const component of freeComponents) {
-        await this._setUnauthenticatedFormat(component.uuid, format);
-      }
-
-      const formatted = await this._readUnauthenticatedPage(url);
-      for (const component of formatted.props.subcategory.components) {
-        const snippets = snippetsByUuid.get(component.uuid);
-        if (snippets && component.snippet) {
-          snippets.push(this._shapeSnippet(component.snippet));
-        }
-      }
-    }
-
-    // The uuid tying a format request to its component in the response is TailwindPlus-internal
-    // and guaranteed nothing: if it changed underneath a page, the responses would stop matching
-    // and the snippets would quietly come up short.  Fail the job instead, so it is retried and
-    // ultimately reported, rather than writing a component with formats missing.
-    if (!this.downloader.interrupted) {
-      for (const component of freeComponents) {
-        const captured = snippetsByUuid.get(component.uuid).length;
-        if (captured !== formats.length) {
-          throw new DownloaderError(
-            `Captured ${captured} of ${formats.length} formats for "${component.name}" on ${url}`
-          );
-        }
-      }
-    }
-
-    const componentData = {};
-    componentData[product] = {};
-    componentData[product][category] = {};
-    componentData[product][category][subcategory.name] = {};
-
-    for (const component of freeComponents) {
-      const snippets = snippetsByUuid.get(component.uuid);
-      componentData[product][category][subcategory.name][component.name] = {
-        name: component.name,
-        snippets
-      };
-      this.logger.debug(`Collected ${snippets.length} snippets for ${component.name}`);
-    }
-
-    this.logger.debug(`Extracted ${freeComponents.length} components from ${product}/${category}/${subcategory.name}`);
-    return componentData;
-  }
-
-  /**
-   * Stops the worker, disposing the unauthenticated request context if one was opened
-   * (authenticated workers hold no resources of their own)
-   */
-  async stop() {
-    if (this.requestContext) {
-      await this.requestContext.dispose();
-      this.requestContext = null;
-      this.inertiaVersion = null;
-    }
-
+  stop() {
     this.state = 'stopped';
   }
 }
@@ -2156,11 +1865,6 @@ function parseArgs() {
     .option('debug-trace', {
       type: 'boolean',
       describe: 'Enable tracing to debug browser interactions, saved in directory `[OUTPUT].traces`'
-    })
-    .option('unauthenticated', {
-      type: 'boolean',
-      default: false,
-      describe: 'Download only free (unauthenticated) components without login'
     })
     .option('output-format', {
       choices: ['json', 'dir'],
@@ -2262,10 +1966,7 @@ export {
   decodeHtmlEntities,
   parseDataPageFromHtml,
   isEcommerceUrl,
-  selectFreeComponents,
-  componentsHaveModes,
   retryDecision,
-  uniqueFrameworkVersions,
   subcategoryOfRequiredFormat,
   sortSnippetsRecursively,
   Format

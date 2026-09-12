@@ -1,7 +1,0 @@
-# A page whose components are all paid — used to check that unauthenticated mode
-# completes cleanly with nothing to capture, rather than erroring.
-#
-# This depends on TailwindPlus offering no free sample on this page.  If they add
-# one, the "unauthenticated: page with no free components" smoke test will fail;
-# pick another all-paid page rather than loosening the assertion.
-https://tailwindcss.com/plus/ui-blocks/marketing/sections/footers

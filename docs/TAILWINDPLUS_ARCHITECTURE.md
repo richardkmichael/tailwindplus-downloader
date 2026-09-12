@@ -6,6 +6,21 @@ site is an InertiaJS application, which shapes both what can be read and how the
 Everything here was observed against the live site.  Where a behaviour is relied upon, the way it
 was confirmed is stated, because these are someone else's implementation details and can change.
 
+## The whole `/plus` area requires a session
+
+Every path under `/plus` answers an unauthenticated request with a 302 to `/plus/login`, including
+the discovery index and the marketing entry point the site's own homepage links to.  Nothing below
+`/plus` is readable without a session, so a run begins by logging in.
+
+The redirect is a plain application-level 302 that sets a Laravel session cookie, not a bot
+challenge or a rate limit: there is no interstitial and no 403, and an authenticated request from
+the same address succeeds.  Reading it as throttling would send a diagnosis in the wrong direction.
+
+A downloader that follows the redirect parses the login page's `data-page`, which carries
+`component: "Login"` and no `props.products`.  Discovery therefore fails on absent product data
+rather than on the redirect itself, so the error a gated run reports names the symptom and not the
+cause.
+
 ## The data is in the page
 
 Every component page is server-rendered with its data embedded as JSON:
@@ -56,26 +71,13 @@ Its value is the `XSRF-TOKEN` cookie, URL-decoded.
 `snippet_lang` sets all three axes at once.  There is no need to change framework, version and mode
 separately.
 
-### Scope differs by authentication, and that shapes everything
+### A format change applies to the whole account
 
-| Session | Scope of a format change | Consequence |
-|---|---|---|
-| Authenticated | The whole account | One request, then every page returns that format |
-| Anonymous | The named component only | Each component must be set individually |
+A PUT naming one component changes every component on the page, and a PUT with no `uuid` at all
+works the same way, so the `uuid` is omitted.  Confirmed by measurement rather than assumption.
 
-Confirmed by measurement rather than assumption.  Authenticated, a PUT naming one component
-changed all twelve components on the page — and a PUT with no `uuid` at all also worked, so the
-downloader omits it.  Anonymous, the same request changed only the named component and left a
-second component on the same page untouched; a PUT without a `uuid` was accepted and changed
-nothing.
-
-This is why the two modes are shaped differently and cannot be collapsed into one:
-
-- Authenticated: set the format once, then fetch every page.  Repeat for each of the 18 formats.
-- Anonymous: set every component on a page, read the page once, and repeat per format.  A page's
-  whole format set is collected in one visit.
-
-The second is why anonymous runs cost one read per format rather than one per component per format.
+This is what lets a run set the format once and then fetch every page, repeating for each of the
+18 formats, rather than setting a format per component.
 
 ### Reading the response
 
@@ -133,9 +135,9 @@ formats missing.
 
 ### `downloadable` marks free components
 
-Anonymous, only components with `downloadable: true` return code.  Everything else requires a
-license.  Which components are free is TailwindPlus's choice and changes: some subcategories offer
-one free sample, some offer two, and some — footers, for instance — offer none at all.
+Components carry a `downloadable` flag.  It once distinguished the free samples an anonymous
+visitor could read from the rest, which required a license; with the whole `/plus` area behind
+login it no longer separates what a session can read.
 
 ## Format combinations
 
@@ -153,7 +155,8 @@ Modes are code variants, not display preferences:
 
 ## Session cookies
 
-An anonymous GET of any page returns everything needed to make a format request:
+A GET of any `/plus` page returns everything needed to make a format request, including the
+redirect an unauthenticated request receives:
 
 | Cookie | Role |
 |---|---|
@@ -219,7 +222,7 @@ The site is not a documented API, so it is worth knowing what the tool is expose
 
 - The `data-page` attribute, and the shape of `props.subcategory.components`
 - The format endpoint, its `snippet_lang` spelling, and the CSRF header it requires
-- The scope difference between authenticated and anonymous format changes
+- The account-wide scope of a format change
 - The login form, the only remaining browser interaction
 
 A change to any of these surfaces as a failed run rather than as wrong output: format verification
