@@ -1,7 +1,8 @@
 # TailwindPlus Downloader
 
 > [!NOTE]
-> A TailwindPlus license is needed to get the most out of this downloader.
+> A TailwindPlus account is required.  The site serves nothing under `/plus` without a session, so
+> every run logs in.
 
 A downloader for TailwindPlus components (HTML, React, Vue) across Tailwind CSS v3 and v4 in
 system, light, and dark modes. Includes a diff tool to compare any two formats, between downloads or
@@ -181,7 +182,6 @@ npx github:richardkmichael/tailwindplus-downloader#latest --retries 5
 
 # Print the resolved configuration and exit
 npx github:richardkmichael/tailwindplus-downloader#latest --show-config
-
 ```
 
 Within the repo, or with a global install, short-form aliases are available:
