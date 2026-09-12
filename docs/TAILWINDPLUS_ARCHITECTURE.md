@@ -57,7 +57,7 @@ PUT https://tailwindcss.com/plus/ui-blocks/language
   content-type: application/json
   x-xsrf-token: <URL-decoded XSRF-TOKEN cookie>
 
-  {"uuid":"<component uuid>","snippet_lang":"react-v4-dark"}
+  {"snippet_lang":"react-v4-dark"}
 ```
 
 The response redirects back to the page, which there is no need to follow: the caller reads the
@@ -73,8 +73,9 @@ separately.
 
 ### A format change applies to the whole account
 
-A PUT naming one component changes every component on the page, and a PUT with no `uuid` at all
-works the same way, so the `uuid` is omitted.  Confirmed by measurement rather than assumption.
+A PUT naming one component in a `uuid` field changes every component on the page, and a PUT with no
+`uuid` at all works the same way, so there is no reason to send one.  Confirmed by measurement
+rather than assumption.
 
 This is what lets a run set the format once and then fetch every page, repeating for each of the
 18 formats, rather than setting a format per component.
@@ -88,12 +89,13 @@ After setting the format, the page can be read either way:
   `x-requested-with: XMLHttpRequest` returns the same props as JSON, at roughly a third of the
   bytes.
 
-The downloader uses the Inertia form and falls back to a full read when it has no version yet.  A
-stale version — after the site is redeployed mid-run — is answered with `409 Conflict` and an
-`X-Inertia-Location` header, which is handled by re-reading the page in full to pick up the current
-version.
+The version accompanying the Inertia form comes from the `version` field of the page data itself.  A
+stale one — after the site is redeployed — is answered with `409 Conflict` and an
+`X-Inertia-Location` header, so any reader using that form has to re-read the page in full to pick
+up the current version.
 
-The version value comes from the `version` field of the page data itself.
+The downloader reads the rendered HTML.  The Inertia form is recorded here because it is the cheaper
+read if the byte count ever matters.
 
 ## No browser is needed to read
 
@@ -106,6 +108,7 @@ one.  The session is then exported with `storageState` and handed to a request c
 with a valid session never starts a browser at all.
 
 That is also why CI installs no browser: the tests that run without credentials never reach login.
+The scheduled site check installs one, because logging in is the whole point of it.
 
 ## Component listings
 
@@ -116,24 +119,25 @@ uuids and different snippets — the light record carries `mode: "light"` code, 
 `mode: "dark"` code.  On a page of twelve components, `props.subcategory.components` holds
 twenty-four entries with twenty-four distinct uuids and twelve distinct names.
 
-Only one record per component is wanted, since the downloader drives the format across all of them
-anyway, and two records sharing a name would collide in the output.  `selectFreeComponents` keeps
-one per name, preferring the light record, and takes whichever is flagged if only one is.
+Anything keying components by name has to collapse the pair, since two records sharing a name would
+collide.  Collapsing is safe because a format change applies to the whole page, so both records
+carry the requested format after one PUT.
 
 An earlier version of this document described the duplicate as an apparent server-side bug.  It is
 not: it is how the catalogue is structured.
 
 ### uuids are opaque and unstable
 
-The uuid is TailwindPlus-internal.  It is required by the format request when anonymous, and is
-used within a single page's fetch cycle to match a response back to the component it belongs to.
-It is never written to the output and nothing assumes it survives between runs.
+The uuid is TailwindPlus-internal and guarantees nothing: it identifies a preview record within one
+response, and there is no basis for assuming it survives a redeploy or names the same record twice.
+The format endpoint accepts one, but sending it buys nothing, so the downloader neither sends a uuid
+nor writes one to the output.
 
-Because it could change underneath a run, the count of collected formats is checked before a
-component is written; a page that comes up short fails its job rather than being written with
-formats missing.
+Anything that does key on a uuid across requests needs its own check that the responses still line
+up, because a uuid that changed underneath it would quietly return the wrong record rather than an
+error.
 
-### `downloadable` marks free components
+### The `downloadable` flag
 
 Components carry a `downloadable` flag.  It once distinguished the free samples an anonymous
 visitor could read from the rest, which required a license; with the whole `/plus` area behind
@@ -201,7 +205,7 @@ const format = ({ snippet: { name, version, mode } }) => `${name}-v${version}-${
 data.props.subcategory.components.map(format);
 ```
 
-Which components are free, and whether the page has modes at all:
+Which components carry the `downloadable` flag, and whether the page has modes at all:
 
 ```javascript
 data.props.subcategory.components.filter(c => c.downloadable).map(c => [c.name, c.preview]);
@@ -225,5 +229,6 @@ The site is not a documented API, so it is worth knowing what the tool is expose
 - The account-wide scope of a format change
 - The login form, the only remaining browser interaction
 
-A change to any of these surfaces as a failed run rather than as wrong output: format verification
-re-reads the page after setting it, and a component whose formats do not all arrive fails its job.
+A change to any of these surfaces as a failed run rather than as wrong output: setting a format
+re-reads a page and checks every component came back in the format that was asked for, so a request
+the site has stopped honouring stops the run instead of filling the output with the wrong code.
