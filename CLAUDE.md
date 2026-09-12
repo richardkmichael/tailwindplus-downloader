@@ -65,13 +65,13 @@ Each test is self-contained in its own numbered subdirectory under `run.PID/` (e
 
 ## Testing a release tag via npx
 
-Smoke-test with the URL file and a prefixed output file.  The `claude_exp__` prefix (two
-underscores) is what the global gitignore matches, so the output and its `.log` stay untracked:
+Smoke-test with the URL file, leaving the output at its default.  That names the download and its
+log `tailwindplus-components-<timestamp>`, which the repository ignores and which no earlier run
+can clobber:
 
 ```bash
 npx github:richardkmichael/tailwindplus-downloader#<tag> \
   --debug-url-file=test/many-test-urls.txt \
-  --output=claude_exp__smoke-test.json \
   --log
 ```
 
