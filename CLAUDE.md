@@ -3,7 +3,9 @@
 - Do not use pkill with node and this script.
 
 ## Logging Best Practices
-- Never console.log directly, always use the logger object if one exists.
+- Never console.log directly, always use the logger object if one exists.  The one exception is the
+  top-level fatal handler, which runs after teardown has closed the logger and so has no other
+  channel.
 
 ## The TailwindPlus Site
 
@@ -15,7 +17,9 @@ the downloader reads the site, and when a download breaks in a way the logs do n
 It describes the site, not the downloader, so it stays accurate as the downloader changes.
 
 ## Testing Guidelines
-- When testing the downloader scripts, use `--output=<SOME TEST FILE> --log`.  The `--log` flag creates a debug log with the same basename but `.log` suffix.
+- Run with `--log`.  It writes a debug log beside the output, same basename with a `.log` suffix.
+- Leave `--output` at its default.  It is timestamped and `.gitignore` matches it, so runs cannot
+  clobber each other and downloaded components stay out of tracked paths.
 
 ## Unit Tests
 
@@ -37,6 +41,10 @@ bash test/smoke-test.sh
 
 Each run writes to a fresh `test/smoke-test-runs/run.PID/` directory so runs never overwrite each other and concurrent runs are safe.
 
+Every test that downloads needs a session or credentials file and skips without one, so a
+credential-free run covers argument handling, the abort paths and the diff tool.  CI runs in that
+configuration; a real download is exercised by the weekly site-monitor workflow instead.
+
 Run only tests whose names contain a filter string (case-sensitive):
 
 ```bash
@@ -52,7 +60,7 @@ To generate a Playwright trace for a specific failing test, combine `--trace` wi
 bash test/smoke-test.sh --trace "dir: output with --log"
 ```
 
-Trace files land in `<output-basename>.traces/` in the repo root (e.g. `dir.traces/`).  WARNING: traces contain login credentials and session tokens in plaintext — never commit or share them.
+Trace files land in `<output-basename>.traces/` in the repo root.  Every smoke test writes to `output.json` or `output/`, so a traced run puts them in `output.traces/`.  WARNING: traces contain login credentials and session tokens in plaintext — never commit or share them.
 
 A trace covers the login flow only.  A browser is launched just for the login form; the downloads
 run over Playwright's `APIRequestContext`, which tracing does not capture.  Trace a login or
@@ -94,4 +102,4 @@ Use conventional commits:
 - `test:` — tests only
 - Add `BREAKING CHANGE: <description>` in the commit body for breaking changes
 
-Multi-part changes: use bullet points in the body as before.
+Multi-part changes: use bullet points in the body.
