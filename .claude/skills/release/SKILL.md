@@ -49,11 +49,16 @@ is out of sync and stop — pushing or pulling on the user's behalf is their cal
 ## Tag Queries
 ```bash
 # Last tag of any kind
-git tag -l 'v[0-9]*' --sort=-version:refname | head -1
+git -c versionsort.suffix=-rc tag -l 'v[0-9]*' --sort=-version:refname | head -1
 
 # Last final tag (no rc) — grep needed; git tag -l patterns support inclusion only
 git tag -l 'v[0-9]*' --sort=-version:refname | grep -v -- '-rc' | head -1
 ```
+
+The `versionsort.suffix` setting is load-bearing.  Git's version sort places a pre-release above its
+own final release by default, so without it `v4.0.0-rc.1` sorts above `v4.0.0`.  The setting makes
+`-rc` tags sort before the final release they lead up to.  The last-final query filters RCs out, so
+its order is unaffected.
 
 ## RC Release Workflow
 
