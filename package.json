@@ -21,7 +21,7 @@
     "twp-create-skeleton": "scripts/create-skeleton.sh"
   },
   "dependencies": {
-    "playwright": "^1.64.1",
+    "playwright": "^1.65.0",
     "read": "^6.0.0",
     "yargs": "^18.2.0"
   },
